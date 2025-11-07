@@ -24,16 +24,21 @@ collector.collect_and_save_player("Lebron James")
 **Update all players (only those with new games):**
 ```bash
 python update_stats.py
-```
 
-**Update specific player:**
-```bash
+# Update specific player
 python update_stats.py --player "Devin Booker"
-```
 
-**If rate limited, use:**
-```bash
+# To add new active players (including free agents)
 python python update_stats.py --include-new
+
+# To skip free agents entirely (and save api calls):
+python python update_stats.py --rostered-only
+
+# To add only new players not present in the DB (to continue data collection)
+python update_stats.py --add-new-only
+
+# Combine arguments as needed
+python update_stats.py --include-new --delay 2.0 --rostered-only  
 ```
 
 ### Verify Data

@@ -1,14 +1,13 @@
 """
 NBA Stats Collector Module
-Season: 2025-2026
 
 This module collects NBA player statistics from the NBA API and stores them in SQLite.
 """
 
 import sqlite3
-from typing import Dict, Optional, List
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import playerdashboardbygeneralsplits
+from typing import Dict, Optional, List, Set
+from nba_api.stats.static import players, teams
+from nba_api.stats.endpoints import playerdashboardbygeneralsplits, commonteamroster
 import time
 from requests.exceptions import ReadTimeout, ConnectionError
 
@@ -32,6 +31,7 @@ class NBAStatsCollector:
         self._init_database()
         self._consecutive_failures = 0
         self._rate_limited = False
+        self._rostered_player_ids = None  # Cache for rostered players
 
     def _init_database(self):
         """Create the database schema."""
@@ -80,6 +80,55 @@ class NBAStatsCollector:
 
         conn.commit()
         conn.close()
+
+    def get_rostered_player_ids(self) -> Set[int]:
+        """
+        Get all player IDs for players currently on NBA team rosters (excludes free agents).
+
+        Returns:
+            Set of player IDs who are on active rosters
+
+        Note: Results are cached to avoid repeated API calls
+        """
+        if self._rostered_player_ids is not None:
+            return self._rostered_player_ids
+
+        all_teams = teams.get_teams()
+        rostered_players = set()
+
+        print(f"Fetching rosters for {len(all_teams)} teams to filter free agents...")
+
+        for i, team in enumerate(all_teams, 1):
+            team_id = team['id']
+            team_abbr = team['abbreviation']
+
+            print(f"  [{i}/{len(all_teams)}] {team_abbr}...", end=" ")
+
+            try:
+                roster = commonteamroster.CommonTeamRoster(
+                    team_id=team_id,
+                    season=self.SEASON,
+                    timeout=30
+                )
+                df = roster.get_data_frames()[0]
+
+                if not df.empty:
+                    player_ids = df['PLAYER_ID'].tolist()
+                    rostered_players.update(player_ids)
+                    print(f"{len(player_ids)} players")
+                else:
+                    print("No roster")
+
+            except Exception as e:
+                print(f"Error: {e}")
+
+            # Rate limiting
+            if i < len(all_teams):
+                time.sleep(0.6)
+
+        print(f"Found {len(rostered_players)} rostered players (excludes free agents)\n")
+        self._rostered_player_ids = rostered_players
+        return rostered_players
 
     def collect_player_stats(self, player_name: str) -> Optional[Dict]:
         """
@@ -416,17 +465,87 @@ class NBAStatsCollector:
                 'new_gp': None
             }
 
-    def update_all_players(self, delay: float = 0.6, only_existing: bool = True):
+    def update_all_players(self, delay: float = 0.6, only_existing: bool = True, rostered_only: bool = False, add_new_only: bool = False):
         """
         Update stats for all players in the database (only if new games played).
 
         Args:
             delay: Delay between API calls to avoid rate limiting (seconds)
             only_existing: If True, only update players already in DB. If False, add new active players too.
+            rostered_only: If True, only collect stats for players on team rosters (excludes free agents, saves ~45 API calls)
+            add_new_only: If True, ONLY add new players not in DB (skips ALL existing players, no API calls for them)
         """
         print(f"Starting update for {self.SEASON} season...")
 
-        if only_existing:
+        if add_new_only:
+            # ADD NEW ONLY MODE: Only add players not in database (most efficient for resuming)
+            # Get all active players
+            all_players = players.get_active_players()
+
+            # Filter to rostered players only if requested
+            if rostered_only:
+                rostered_ids = self.get_rostered_player_ids()
+                all_players = [p for p in all_players if p['id'] in rostered_ids]
+                print(f"Filtered to {len(all_players)} rostered players (excluded free agents)")
+
+            # Get existing player IDs from database
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT player_id FROM player_stats")
+            existing_ids = {row[0] for row in cursor.fetchall()}
+            conn.close()
+
+            # Filter to ONLY new players (not in DB)
+            new_players = [p for p in all_players if p['id'] not in existing_ids]
+
+            total = len(new_players)
+            skipped_count = len(all_players) - total
+
+            print(f"Found {len(all_players)} active players: {skipped_count} in DB (skipping), {total} new")
+            print(f"Using {delay}s delay between API calls")
+            print("Adding new players ONLY (zero API calls for existing players)\n")
+
+            added_count = 0
+            error_count = 0
+
+            for i, player in enumerate(new_players, 1):
+                # Check for rate limiting - stop early if detected
+                if self._rate_limited:
+                    print(f"\n{'!' * 60}")
+                    print(f"STOPPED: Rate limiting detected after {i-1} players.")
+                    print(f"Try again later or increase delay.")
+                    print(f"Progress saved: {added_count} new players added to database.")
+                    print(f"{'!' * 60}")
+                    break
+
+                player_name = player['full_name']
+                print(f"[{i}/{total}] {player_name}...", end=" ")
+
+                try:
+                    stats = self.collect_player_stats(player_name)
+
+                    if stats:
+                        self.save_to_database(stats)
+                        added_count += 1
+                        print(f"Added (GP: {stats['games_played']})")
+                    else:
+                        error_count += 1
+                        print(f"No data")
+
+                except Exception as e:
+                    error_count += 1
+                    print(f"✗ Error: {e}")
+
+                # Rate limiting
+                if i < total:
+                    time.sleep(delay)
+
+            print(f"\n{'=' * 60}")
+            print(f"Add new players complete!")
+            print(f"Added: {added_count}, No data: {error_count}, Skipped (existing): {skipped_count}")
+            print(f"{'=' * 60}")
+
+        elif only_existing:
             # Get players from database
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -483,20 +602,103 @@ class NBAStatsCollector:
             print(f"{'=' * 60}")
 
         else:
-            # Update all active players (includes new players)
-            self.collect_all_active_players(delay=delay)
+            # Get all active players
+            all_players = players.get_active_players()
 
-    def collect_all_active_players(self, delay: float = 1.0):
+            # Filter to rostered players only if requested
+            if rostered_only:
+                rostered_ids = self.get_rostered_player_ids()
+                all_players = [p for p in all_players if p['id'] in rostered_ids]
+                print(f"Filtered to {len(all_players)} rostered players (excluded free agents)")
+
+            # Get existing player IDs from database
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT player_id FROM player_stats")
+            existing_ids = {row[0] for row in cursor.fetchall()}
+            conn.close()
+
+            total = len(all_players)
+            existing_count = len(existing_ids)
+            new_count = total - existing_count
+
+            print(f"Found {total} active players: {existing_count} in DB, {new_count} new")
+            print(f"Using {delay}s delay between API calls\n")
+
+            updated_count = 0
+            skipped_count = 0
+            added_count = 0
+            error_count = 0
+
+            for i, player in enumerate(all_players, 1):
+                # Check for rate limiting - stop early if detected
+                if self._rate_limited:
+                    print(f"\n{'!' * 60}")
+                    print(f"STOPPED: Rate limiting detected after {i-1} players.")
+                    print(f"Try again later or increase delay.")
+                    print(f"{'!' * 60}")
+                    break
+
+                player_id = player['id']
+                player_name = player['full_name']
+
+                print(f"[{i}/{total}] {player_name}...", end=" ")
+
+                try:
+                    if player_id in existing_ids:
+                        # Existing player - use efficient update (checks games_played first)
+                        result = self.update_player_stats(player_name)
+
+                        if result['updated']:
+                            updated_count += 1
+                            print(f"Updated (GP: {result['old_gp']} → {result['new_gp']})")
+                        else:
+                            skipped_count += 1
+                            print(f"Skipped (GP: {result['old_gp']})")
+                    else:
+                        # New player - do full collection
+                        stats = self.collect_player_stats(player_name)
+
+                        if stats:
+                            self.save_to_database(stats)
+                            added_count += 1
+                            print(f"Added (GP: {stats['games_played']})")
+                        else:
+                            error_count += 1
+                            print(f"No data")
+
+                except Exception as e:
+                    error_count += 1
+                    print(f"Error: {e}")
+
+                # Rate limiting
+                if i < total:
+                    time.sleep(delay)
+
+            print(f"\n{'=' * 60}")
+            print(f"Update complete!")
+            print(f"Updated: {updated_count}, Skipped: {skipped_count}, Added: {added_count}, Errors: {error_count}")
+            print(f"{'=' * 60}")
+
+    def collect_all_active_players(self, delay: float = 1.0, rostered_only: bool = False):
         """
         Collect stats for all active players in the current season.
 
         Args:
             delay: Delay between API calls to avoid rate limiting (seconds, default: 1.0)
+            rostered_only: If True, only collect stats for players on team rosters (excludes free agents, saves ~45 API calls)
         """
         print(f"Fetching all active players for {self.SEASON} season...")
 
         # Get all active players
         all_players = players.get_active_players()
+
+        # Filter to rostered players only if requested
+        if rostered_only:
+            rostered_ids = self.get_rostered_player_ids()
+            all_players = [p for p in all_players if p['id'] in rostered_ids]
+            print(f"Filtered to {len(all_players)} rostered players (excluded free agents)")
+
         total = len(all_players)
 
         print(f"Found {total} active players. Starting collection...")
