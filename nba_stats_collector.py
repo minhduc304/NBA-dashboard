@@ -10,6 +10,7 @@ from typing import Dict, Optional, List
 from nba_api.stats.static import players
 from nba_api.stats.endpoints import playerdashboardbygeneralsplits
 import time
+from requests.exceptions import ReadTimeout, ConnectionError
 
 
 class NBAStatsCollector:
@@ -29,6 +30,8 @@ class NBAStatsCollector:
         """Initialize the collector with a database path."""
         self.db_path = db_path
         self._init_database()
+        self._consecutive_failures = 0
+        self._rate_limited = False
 
     def _init_database(self):
         """Create the database schema."""
@@ -150,13 +153,56 @@ class NBAStatsCollector:
             print(f"Error collecting stats for {player_full_name}: {e}")
             return None
 
+    def _api_call_with_retry(self, api_func, max_retries: int = 3, base_delay: float = 2.0):
+        """
+        Execute an API call with exponential backoff retry logic.
+
+        Args:
+            api_func: Function that makes the API call
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay in seconds (doubles with each retry)
+
+        Returns:
+            Result of api_func or None if all retries failed
+        """
+        for attempt in range(max_retries):
+            try:
+                result = api_func()
+                self._consecutive_failures = 0  # Reset on success
+                self._rate_limited = False
+                return result
+
+            except (ReadTimeout, ConnectionError) as e:
+                self._consecutive_failures += 1
+
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"  ⚠ Timeout/Connection error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"  ✗ Failed after {max_retries} attempts: {e}")
+
+                    # Detect rate limiting
+                    if self._consecutive_failures >= 3:
+                        self._rate_limited = True
+                        print(f"  ⚠ WARNING: Possible rate limiting detected ({self._consecutive_failures} consecutive failures)")
+
+                    return None
+
+            except Exception as e:
+                print(f"  ✗ API error: {e}")
+                return None
+
+        return None
+
     def _get_overall_stats(self, player_id: int) -> Optional[Dict]:
         """Get overall season stats for a player (per-game averages)."""
-        try:
+        def fetch():
             splits = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
                 player_id=player_id,
                 season=self.SEASON,
-                per_mode_detailed='PerGame'
+                per_mode_detailed='PerGame',
+                timeout=30
             )
             df = splits.get_data_frames()[0]
 
@@ -165,18 +211,17 @@ class NBAStatsCollector:
 
             return df.iloc[0].to_dict()
 
-        except Exception as e:
-            print(f"Error fetching overall stats: {e}")
-            return None
+        return self._api_call_with_retry(fetch)
 
     def _get_period_stats(self, player_id: int, period: int) -> Optional[Dict]:
         """Get stats for a specific period/quarter (per-game averages)."""
-        try:
+        def fetch():
             splits = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
                 player_id=player_id,
                 season=self.SEASON,
                 period=period,
-                per_mode_detailed='PerGame'
+                per_mode_detailed='PerGame',
+                timeout=30
             )
             df = splits.get_data_frames()[0]
 
@@ -185,18 +230,17 @@ class NBAStatsCollector:
 
             return df.iloc[0].to_dict()
 
-        except Exception as e:
-            print(f"Error fetching period {period} stats: {e}")
-            return None
+        return self._api_call_with_retry(fetch)
 
     def _get_half_stats(self, player_id: int, game_segment: str) -> Optional[Dict]:
         """Get stats for a game segment (First Half or Second Half) (per-game averages)."""
-        try:
+        def fetch():
             splits = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
                 player_id=player_id,
                 season=self.SEASON,
                 game_segment_nullable=game_segment,
-                per_mode_detailed='PerGame'
+                per_mode_detailed='PerGame',
+                timeout=30
             )
             df = splits.get_data_frames()[0]
 
@@ -205,9 +249,7 @@ class NBAStatsCollector:
 
             return df.iloc[0].to_dict()
 
-        except Exception as e:
-            print(f"Error fetching {game_segment} stats: {e}")
-            return None
+        return self._api_call_with_retry(fetch)
 
     def _calculate_combo_stats(self, stats: Dict) -> Dict:
         """Calculate combination stats from basic stats."""
@@ -404,6 +446,14 @@ class NBAStatsCollector:
             error_count = 0
 
             for i, (player_name,) in enumerate(db_players, 1):
+                # Check for rate limiting - stop early if detected
+                if self._rate_limited:
+                    print(f"\n{'!' * 60}")
+                    print(f"STOPPED: Rate limiting detected after {i-1} players.")
+                    print(f"Try again later or increase delay.")
+                    print(f"{'!' * 60}")
+                    break
+
                 print(f"[{i}/{total}] Checking {player_name}...", end=" ")
 
                 try:
@@ -411,17 +461,17 @@ class NBAStatsCollector:
 
                     if result['updated']:
                         updated_count += 1
-                        print(f"✓ Updated (GP: {result['old_gp']} → {result['new_gp']})")
+                        print(f"Updated (GP: {result['old_gp']} → {result['new_gp']})")
                     else:
                         skipped_count += 1
                         if result['reason'] == 'No new games':
-                            print(f"○ Skipped (GP: {result['old_gp']}, no new games)")
+                            print(f"Skipped (GP: {result['old_gp']}, no new games)")
                         else:
-                            print(f"○ Skipped ({result['reason']})")
+                            print(f"Skipped ({result['reason']})")
 
                 except Exception as e:
                     error_count += 1
-                    print(f"✗ Error: {e}")
+                    print(f"Error: {e}")
 
                 # Rate limiting
                 if i < total:
@@ -436,12 +486,12 @@ class NBAStatsCollector:
             # Update all active players (includes new players)
             self.collect_all_active_players(delay=delay)
 
-    def collect_all_active_players(self, delay: float = 0.6):
+    def collect_all_active_players(self, delay: float = 1.0):
         """
         Collect stats for all active players in the current season.
 
         Args:
-            delay: Delay between API calls to avoid rate limiting (seconds)
+            delay: Delay between API calls to avoid rate limiting (seconds, default: 1.0)
         """
         print(f"Fetching all active players for {self.SEASON} season...")
 
@@ -450,14 +500,22 @@ class NBAStatsCollector:
         total = len(all_players)
 
         print(f"Found {total} active players. Starting collection...")
+        print(f"Using {delay}s delay between players to avoid rate limiting.\n")
 
         success_count = 0
         no_data_count = 0
         error_count = 0
 
         for i, player in enumerate(all_players, 1):
+            # Check for rate limiting - stop early if detected
+            if self._rate_limited:
+                print(f"STOPPED: Rate limiting detected after {i-1} players.")
+                print(f"Waiting may help. Try again later with a longer delay (--delay 2.0)")
+                print(f"Or resume from where you left off using update_all_players()")
+                break
+
             player_name = player['full_name']
-            print(f"\n[{i}/{total}] Processing {player_name}...")
+            print(f"[{i}/{total}] Processing {player_name}...", end=" ")
 
             try:
                 stats = self.collect_player_stats(player_name)
@@ -465,13 +523,14 @@ class NBAStatsCollector:
                 if stats:
                     self.save_to_database(stats)
                     success_count += 1
+                    print(f"Saved (GP: {stats['games_played']})")
                 else:
                     no_data_count += 1
-                    print(f"  → No data available")
+                    print(f"No data")
 
             except Exception as e:
                 error_count += 1
-                print(f"  → Error: {e}")
+                print(f"Error: {e}")
 
             # Rate limiting
             if i < total:

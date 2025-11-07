@@ -19,7 +19,7 @@ collector = NBAStatsCollector()
 collector.collect_and_save_player("Lebron James")
 ```
 
-### Update Stats (Efficient - Recommended for Daily Updates)
+### Update Stats (Recommended for Daily Updates)
 
 **Update all players (only those with new games):**
 ```bash
@@ -31,13 +31,10 @@ python update_stats.py
 python update_stats.py --player "Devin Booker"
 ```
 
-**Why use update instead of re-collection?**
-- 80-95% fewer API calls
-- Only updates players who played new games
-- Much faster (2-5 min vs 20-30 min)
-- Recommended for daily updates
-
-See `docs/UPDATE_FLOW.md` for complete update documentation.
+**If rate limited, use:**
+```bash
+python python update_stats.py --include-new
+```
 
 ### Verify Data
 
@@ -51,8 +48,6 @@ python verify_data.py
 - `update_stats.py` - Efficient update script (recommended for daily use)
 - `verify_data.py` - Database verification script
 - `nba_stats.db` - SQLite database (created after first run)
-- `docs/SPECIFICATION.md` - Complete module documentation
-- `docs/UPDATE_FLOW.md` - Update system documentation
 
 ## Collected Stats
 
