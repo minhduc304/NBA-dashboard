@@ -37,6 +37,9 @@ python python update_stats.py --rostered-only
 # To add only new players not present in the DB (to continue data collection)
 python update_stats.py --add-new-only
 
+# To add missing shooting zones data
+python backfill_shooting_zones.py
+
 # Combine arguments as needed
 python update_stats.py --include-new --delay 2.0 --rostered-only  
 ```
