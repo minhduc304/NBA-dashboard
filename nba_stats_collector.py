@@ -7,7 +7,12 @@ This module collects NBA player statistics from the NBA API and stores them in S
 import sqlite3
 from typing import Dict, Optional, List, Set
 from nba_api.stats.static import players, teams
-from nba_api.stats.endpoints import playerdashboardbygeneralsplits, commonteamroster
+from nba_api.stats.endpoints import (
+    playerdashboardbygeneralsplits,
+    playerdashboardbyshootingsplits,
+    teamdashboardbyshootingsplits,
+    commonteamroster
+)
 import time
 from requests.exceptions import ReadTimeout, ConnectionError
 
@@ -78,6 +83,45 @@ class NBAStatsCollector:
             )
         ''')
 
+        # Player shooting zones table (6 zones, excluding Backcourt)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_shooting_zones (
+                player_id INTEGER NOT NULL,
+                season TEXT NOT NULL,
+                zone_name TEXT NOT NULL,
+
+                -- Core shooting stats (per-game averages)
+                fgm REAL,
+                fga REAL,
+                fg_pct REAL,
+                efg_pct REAL,
+
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                PRIMARY KEY (player_id, season, zone_name),
+                FOREIGN KEY (player_id) REFERENCES player_stats(player_id)
+            )
+        ''')
+
+        # Team defensive zones table (opponent shooting by zone)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS team_defensive_zones (
+                team_id INTEGER NOT NULL,
+                season TEXT NOT NULL,
+                zone_name TEXT NOT NULL,
+
+                -- Opponent shooting stats (per-game averages)
+                opp_fgm REAL,
+                opp_fga REAL,
+                opp_fg_pct REAL,
+                opp_efg_pct REAL,
+
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                PRIMARY KEY (team_id, season, zone_name)
+            )
+        ''')
+
         conn.commit()
         conn.close()
 
@@ -130,12 +174,13 @@ class NBAStatsCollector:
         self._rostered_player_ids = rostered_players
         return rostered_players
 
-    def collect_player_stats(self, player_name: str) -> Optional[Dict]:
+    def collect_player_stats(self, player_name: str, collect_shooting_zones: bool = True) -> Optional[Dict]:
         """
         Collect all stats for a single player.
 
         Args:
             player_name: Full name of the player (e.g., "Devin Booker")
+            collect_shooting_zones: If True, also collect shooting zone data (default: True)
 
         Returns:
             Dictionary of stats or None if player not found/no data
@@ -161,6 +206,13 @@ class NBAStatsCollector:
             # Collect quarter/half stats
             q1_stats = self._get_period_stats(player_id, period=1)
             first_half_stats = self._get_half_stats(player_id, "First Half")
+
+            # Collect shooting zones
+            shooting_zones = None
+            if collect_shooting_zones:
+                shooting_zones = self._get_player_shooting_zones(player_id)
+                if shooting_zones:
+                    print(f"  Collected {len(shooting_zones)} shooting zones")
 
             # Combine all stats
             stats = {
@@ -191,6 +243,9 @@ class NBAStatsCollector:
 
                 # Metadata
                 'games_played': overall_stats.get('GP'),
+
+                # Shooting zones (not saved to player_stats table)
+                'shooting_zones': shooting_zones
             }
 
             # Calculate combo stats
@@ -316,8 +371,85 @@ class NBAStatsCollector:
             'steals_plus_blocks': stl + blk,
         }
 
+    def _get_player_shooting_zones(self, player_id: int) -> Optional[List[Dict]]:
+        """
+        Get shooting zone stats for a player (per-game averages).
+        Returns list of zone dictionaries, excluding Backcourt.
+        """
+        def fetch():
+            endpoint = playerdashboardbyshootingsplits.PlayerDashboardByShootingSplits(
+                player_id=player_id,
+                season=self.SEASON,
+                per_mode_detailed='PerGame',
+                timeout=30
+            )
+            df = endpoint.shot_area_player_dashboard.get_data_frame()
+
+            if df.empty:
+                return None
+
+            # Filter out Backcourt and return zones as list of dicts
+            zones = []
+            for _, row in df.iterrows():
+                zone_name = row['GROUP_VALUE']
+
+                # Skip Backcourt (heaves with no statistical significance)
+                if zone_name == 'Backcourt':
+                    continue
+
+                zones.append({
+                    'zone_name': zone_name,
+                    'fgm': row['FGM'],
+                    'fga': row['FGA'],
+                    'fg_pct': row['FG_PCT'],
+                    'efg_pct': row['EFG_PCT']
+                })
+
+            return zones
+
+        return self._api_call_with_retry(fetch)
+
+    def _get_team_defensive_zones(self, team_id: int) -> Optional[List[Dict]]:
+        """
+        Get team defensive shooting zone stats (opponent shooting by zone, per-game averages).
+        Returns list of zone dictionaries, excluding Backcourt.
+        """
+        def fetch():
+            endpoint = teamdashboardbyshootingsplits.TeamDashboardByShootingSplits(
+                team_id=team_id,
+                season=self.SEASON,
+                per_mode_detailed='PerGame',
+                measure_type_detailed_defense='Opponent',
+                timeout=30
+            )
+            df = endpoint.shot_area_team_dashboard.get_data_frame()
+
+            if df.empty:
+                return None
+
+            # Filter out Backcourt and return zones as list of dicts
+            zones = []
+            for _, row in df.iterrows():
+                zone_name = row['GROUP_VALUE']
+
+                # Skip Backcourt
+                if zone_name == 'Backcourt':
+                    continue
+
+                zones.append({
+                    'zone_name': zone_name,
+                    'opp_fgm': row['FGM'],
+                    'opp_fga': row['FGA'],
+                    'opp_fg_pct': row['FG_PCT'],
+                    'opp_efg_pct': row['EFG_PCT']
+                })
+
+            return zones
+
+        return self._api_call_with_retry(fetch)
+
     def save_to_database(self, stats: Dict):
-        """Save player stats to the database."""
+        """Save player stats to the database (including shooting zones if present)."""
         if not stats:
             return
 
@@ -347,6 +479,67 @@ class NBAStatsCollector:
 
         print(f"Saved stats for {stats['player_name']} to database")
 
+        # Save shooting zones if present
+        if stats.get('shooting_zones'):
+            self.save_player_shooting_zones(stats['player_id'], stats['shooting_zones'])
+            print(f"  Saved {len(stats['shooting_zones'])} shooting zones")
+
+    def save_player_shooting_zones(self, player_id: int, zones: List[Dict]):
+        """Save player shooting zone data to database."""
+        if not zones:
+            return
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for zone in zones:
+            cursor.execute('''
+                INSERT OR REPLACE INTO player_shooting_zones (
+                    player_id, season, zone_name,
+                    fgm, fga, fg_pct, efg_pct,
+                    last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                player_id,
+                self.SEASON,
+                zone['zone_name'],
+                zone['fgm'],
+                zone['fga'],
+                zone['fg_pct'],
+                zone['efg_pct']
+            ))
+
+        conn.commit()
+        conn.close()
+
+    def save_team_defensive_zones(self, team_id: int, zones: List[Dict]):
+        """Save team defensive zone data to database."""
+        if not zones:
+            return
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for zone in zones:
+            cursor.execute('''
+                INSERT OR REPLACE INTO team_defensive_zones (
+                    team_id, season, zone_name,
+                    opp_fgm, opp_fga, opp_fg_pct, opp_efg_pct,
+                    last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                team_id,
+                self.SEASON,
+                zone['zone_name'],
+                zone['opp_fgm'],
+                zone['opp_fga'],
+                zone['opp_fg_pct'],
+                zone['opp_efg_pct']
+            ))
+
+        conn.commit()
+        conn.close()
+
     def collect_and_save_player(self, player_name: str) -> bool:
         """
         Collect stats for a player and save to database.
@@ -362,6 +555,91 @@ class NBAStatsCollector:
             self.save_to_database(stats)
             return True
         return False
+
+    def collect_and_save_team_defense(self, team_name: str) -> bool:
+        """
+        Collect defensive shooting zone stats for a team and save to database.
+
+        Args:
+            team_name: Full name of the team (e.g., "Phoenix Suns")
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Find team
+        all_teams = teams.get_teams()
+        team_dict = [t for t in all_teams if t['full_name'] == team_name or t['nickname'] == team_name]
+
+        if not team_dict:
+            print(f"Team '{team_name}' not found")
+            return False
+
+        team_id = team_dict[0]['id']
+        team_full_name = team_dict[0]['full_name']
+
+        print(f"Collecting defensive zones for {team_full_name} (ID: {team_id})...")
+
+        try:
+            zones = self._get_team_defensive_zones(team_id)
+            if zones:
+                self.save_team_defensive_zones(team_id, zones)
+                print(f"Saved {len(zones)} defensive zones for {team_full_name}")
+                return True
+            else:
+                print(f"No defensive zone data found for {team_full_name}")
+                return False
+
+        except Exception as e:
+            print(f"Error collecting defensive zones for {team_full_name}: {e}")
+            return False
+
+    def collect_all_team_defenses(self, delay: float = 0.6):
+        """
+        Collect defensive shooting zone stats for all NBA teams.
+
+        Args:
+            delay: Delay between API calls to avoid rate limiting (seconds)
+        """
+        print(f"Fetching all NBA teams for {self.SEASON} season...")
+
+        all_nba_teams = teams.get_teams()
+        total = len(all_nba_teams)
+
+        print(f"Found {total} teams. Starting collection...")
+        print(f"Using {delay}s delay between teams to avoid rate limiting.\n")
+
+        success_count = 0
+        error_count = 0
+
+        for i, team in enumerate(all_nba_teams, 1):
+            team_name = team['full_name']
+            team_id = team['id']
+
+            print(f"[{i}/{total}] {team_name}...", end=" ")
+
+            try:
+                zones = self._get_team_defensive_zones(team_id)
+
+                if zones:
+                    self.save_team_defensive_zones(team_id, zones)
+                    success_count += 1
+                    print(f"Saved {len(zones)} zones")
+                else:
+                    error_count += 1
+                    print(f"No data")
+
+            except Exception as e:
+                error_count += 1
+                print(f"Error: {e}")
+
+            # Rate limiting
+            if i < total:
+                time.sleep(delay)
+
+        print(f"\n{'=' * 60}")
+        print(f"Collection complete!")
+        print(f"Success: {success_count}, Errors: {error_count}")
+        print(f"{'=' * 60}")
 
     def get_player_from_database(self, player_id: int) -> Optional[Dict]:
         """
