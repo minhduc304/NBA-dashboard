@@ -73,7 +73,7 @@ def main():
         # Collect assist zones if requested
         if args.collect_assist_zones:
             print(f"\nCollecting assist zones for {args.player}...")
-            collector.collect_player_assist_zones(args.player)
+            collector.collect_player_assist_zones(args.player, delay=args.delay)
 
         # Note: --collect-team-defense is ignored when --player is specified
         # Team defense is league-wide, not player-specific
@@ -106,15 +106,26 @@ def main():
             print("\n" + "=" * 60)
             print("ASSIST ZONES COLLECTION")
             print("=" * 60)
-            print("Collecting assist zones for all players in database...")
+            print("Collecting assist zones for players in database...")
             print("(Incremental: only processes new games since last run)")
             print(f"Using {args.delay}s delay between API calls\n")
 
             import sqlite3
+            import time
+
+            # Get all players with their current games_played count
             conn = sqlite3.connect(collector.db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT player_name FROM player_stats WHERE season = ?", (collector.SEASON,))
-            all_players = [row[0] for row in cursor.fetchall()]
+            cursor.execute("""
+                SELECT ps.player_id, ps.player_name, ps.games_played,
+                       COALESCE(MAX(paz.games_analyzed), 0) as games_analyzed
+                FROM player_stats ps
+                LEFT JOIN player_assist_zones paz
+                    ON ps.player_id = paz.player_id AND paz.season = ?
+                WHERE ps.season = ?
+                GROUP BY ps.player_id, ps.player_name, ps.games_played
+            """, (collector.SEASON, collector.SEASON))
+            all_players = cursor.fetchall()
             conn.close()
 
             success_count = 0
@@ -122,22 +133,29 @@ def main():
             error_count = 0
             total = len(all_players)
 
-            for i, player_name in enumerate(all_players, 1):
-                print(f"[{i}/{total}] {player_name}...")
+            for i, (_, player_name, games_played, games_analyzed) in enumerate(all_players, 1):
+                print(f"[{i}/{total}] {player_name}...", end=" ")
 
+                # Skip if already analyzed all games (no API call needed!)
+                if games_analyzed and games_analyzed >= games_played:
+                    skip_count += 1
+                    print(f"Skipped (all {games_played} games already analyzed)")
+                    continue
+
+                # Player has new games to analyze
                 try:
-                    result = collector.collect_player_assist_zones(player_name)
+                    # Pass delay to control play-by-play API rate limiting
+                    result = collector.collect_player_assist_zones(player_name, delay=args.delay)
                     if result:
                         success_count += 1
                     else:
                         skip_count += 1
                 except Exception as e:
                     error_count += 1
-                    print(f"  Error: {e}")
+                    print(f"Error: {e}")
 
-                # Rate limiting between players
+                # Rate limiting between players (only for those we actually processed)
                 if i < total:
-                    import time
                     time.sleep(args.delay)
 
             print(f"\n{'=' * 60}")

@@ -517,12 +517,14 @@ class NBAStatsCollector:
         Get all game IDs with dates for a player, ordered chronologically (oldest first).
 
         This is used for incremental assist zone collection to process games in order.
+        Only returns games where the player recorded at least 1 assist.
 
         Args:
             player_id: NBA API player ID
 
         Returns:
-            List of dicts with 'game_id' and 'game_date' keys, sorted oldest to newest
+            List of dicts with 'game_id', 'game_date', and 'assists' keys, sorted oldest to newest
+            Only includes games with AST > 0 to avoid wasting play-by-play API calls
         """
         from nba_api.stats.endpoints import playergamelog
 
@@ -538,11 +540,17 @@ class NBAStatsCollector:
             if df.empty:
                 return []
 
-            # Extract game_id and game_date, sort chronologically (oldest first)
+            # Extract game_id, game_date, and assists
+            # Filter to only games with at least 1 assist (AST > 0)
             # Game log returns newest first, so we reverse
             games = [
-                {'game_id': row['Game_ID'], 'game_date': row['GAME_DATE']}
+                {
+                    'game_id': row['Game_ID'],
+                    'game_date': row['GAME_DATE'],
+                    'assists': row['AST']
+                }
                 for _, row in df.iterrows()
+                if row['AST'] > 0  # Only include games with assists!
             ]
 
             # Reverse to get chronological order (oldest first)
@@ -580,12 +588,12 @@ class NBAStatsCollector:
             # Regex to parse assist from description
             # Example: "Stephen Curry 26' 3PT Jump Shot (3 PTS) (Draymond Green 5 AST)"
             assist_pattern = re.compile(
-                r"(?P<shooter>[\w\s.']+?)\s+"    # Shooter name
-                r"(?P<distance>\d+)'?\s*"        # Distance
-                r"(?P<shot_type>.*?)\s+"         # Shot type
-                r"\((?P<points>\d+)\s+PTS\)\s+"  # Points
-                r"\((?P<passer>[\w\s.']+?)\s+"   # Passer name
-                r"(?P<ast>\d+)\s+AST\)"          # Assist number
+                r"(?P<shooter>[\w\s.'\-]+?)\s+"     # Shooter name (includes hyphen for names like "Caldwell-Pope")
+                r"(?P<distance>\d+)'?\s*"           # Distance
+                r"(?P<shot_type>.*?)\s+"            # Shot type
+                r"\((?P<points>\d+)\s+PTS\)\s+"     # Points
+                r"\((?P<passer>[\w\s.'\-]+?)\s+"    # Passer name (includes hyphen!)
+                r"(?P<ast>\d+)\s+AST\)"             # Assist number
             )
 
             for _,row in df.iterrows():
@@ -655,10 +663,13 @@ class NBAStatsCollector:
             game_assists: List[Dict]
     ) -> Dict[str, Dict]:
         """
-        Aggregate assist events by zone for a specific player
+        Aggregate assist events by zone for a specific player.
+
+        Uses last name matching (NBA play-by-play format) with team-based verification
+        to avoid false matches between players with same last name.
 
         Args:
-            player_id: Target player's ID
+            player_id: Target player's ID (used to verify correct player)
             player_name: Target player's name
             game_assists: All assist events from games
 
@@ -673,31 +684,141 @@ class NBAStatsCollector:
             'ast_fga': 0,
         })
 
-        # Build name variations for matching 
-        name_variations = {
-            player_name,
-            player_name.replace('Jr.', '').replace('Sr', ''),
-            # Add more variations as needed
-        }
+        # Build comprehensive name variations for matching
+        # NBA API uses various formats: "Jrue Holiday", "J. Holiday", "Jrue R. Holiday"
+        name_parts = player_name.split()
+
+        # Handle name components
+        if len(name_parts) >= 2:
+            first_name = name_parts[0]
+            first_initial = first_name[0]
+
+            # Check if last part is a suffix (Jr., Sr., III, etc.)
+            suffixes = ['Jr.', 'Sr.', 'III', 'II', 'IV']
+            has_suffix = False
+            suffix = None
+
+            if name_parts[-1] in suffixes and len(name_parts) >= 3:
+                # "Jimmy Butler III" → last_name = "Butler", suffix = "III"
+                last_name = name_parts[-2]
+                last_name_clean = last_name
+                has_suffix = True
+                suffix = name_parts[-1]
+            else:
+                # "Chris Paul" → last_name = "Paul"
+                last_name = name_parts[-1]
+                # Still clean it in case there's "Jr." attached without space
+                last_name_clean = last_name
+                for suf in suffixes:
+                    last_name_clean = last_name_clean.replace(suf, '').strip()
+
+            # Handle name particles (da, de, van, von, etc.)
+            # "Tristan da Silva" → also include "da Silva"
+            particles = ['da', 'de', 'van', 'von', 'del', 'della', 'di']
+            has_particle = False
+            particle_last_name = None
+
+            if len(name_parts) >= 3 and name_parts[-2].lower() in particles:
+                # "Tristan da Silva" → particle_last_name = "da Silva"
+                particle_last_name = f"{name_parts[-2]} {name_parts[-1]}"
+                has_particle = True
+
+            # Convert special characters to ASCII (for international players)
+            # "Valančiūnas" → "Valanciunas", "Vučević" → "Vucevic"
+            import unicodedata
+            def to_ascii(text):
+                """Remove diacritics and convert to ASCII."""
+                nfd = unicodedata.normalize('NFD', text)
+                return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
+
+            first_name_ascii = to_ascii(first_name)
+            last_name_ascii = to_ascii(last_name)
+            last_name_clean_ascii = to_ascii(last_name_clean)
+
+            name_variations = {
+                player_name,  # Full name: "Chris Paul" or "Jimmy Butler III"
+                f"{first_name} {last_name_clean}",  # Without suffix
+                f"{first_initial}. {last_name}",  # Initial: "C. Paul"
+                f"{first_initial}. {last_name_clean}",  # Initial without suffix
+                f"{first_name} {last_name}",  # Standard format
+                last_name,  # LAST NAME ONLY: "Paul" or "Butler" (play-by-play format!)
+                last_name_clean,  # Last name without suffix
+                # ASCII versions for international players
+                last_name_ascii,  # "Valanciunas"
+                last_name_clean_ascii,  # "Vucevic"
+                f"{first_name_ascii} {last_name_ascii}",  # "Jonas Valanciunas"
+            }
+
+            # Add "LastName + Suffix" variation for players with suffixes
+            # E.g., "Butler III", "Hardaway Jr.", "Jones Jr."
+            if has_suffix:
+                name_variations.add(f"{last_name} {suffix}")  # "Butler III"
+                name_variations.add(f"{last_name_ascii} {suffix}")  # ASCII version
+
+            # Add "particle + LastName" variation for Portuguese/Spanish/Dutch names
+            # E.g., "da Silva", "van Vleet", "de Jong"
+            if has_particle:
+                name_variations.add(particle_last_name)  # "da Silva"
+                # ASCII version
+                particle_ascii = to_ascii(particle_last_name)
+                name_variations.add(particle_ascii)
+        else:
+            # Single name (rare case)
+            name_variations = {player_name}
+
+        matched_assists = 0
+        unique_passers = set()  # Debug: collect unique passer names
 
         for event in game_assists:
             # Check if this player made the assist
             passer = event['passer_name'].strip()
+            unique_passers.add(passer)  # Debug: track all passer names
 
-            # Try to match passer_name
-            if passer not in name_variations:
-                # Try partial match (last name)
-                if not any(passer.endswith(name.split()[-1]) for name in name_variations):
-                    continue
+            # Make matching case-insensitive
+            passer_lower = passer.lower()
+            name_variations_lower = {name.lower() for name in name_variations}
 
-            # Determine zone from coordinates 
+            # Try exact match first (most common)
+            if passer_lower in name_variations_lower:
+                matched = True
+            else:
+                # Try fuzzy match: check if passer contains first AND last name
+                # This handles middle names/initials: "Jrue R. Holiday" matches "Jrue Holiday"
+                if len(name_parts) >= 2:
+                    first_name_lower = name_parts[0].lower()
+                    last_name_lower = name_parts[-1].lower()
+                    first_initial_lower = first_name_lower[0]
+
+                    first_in_passer = first_name_lower in passer_lower or f"{first_initial_lower}." in passer_lower
+                    last_in_passer = last_name_lower in passer_lower
+                    matched = first_in_passer and last_in_passer
+                else:
+                    matched = False
+
+            if not matched:
+                continue
+
+            matched_assists += 1
+
+            # Determine zone from coordinates
             zone = self._coords_to_zone(event['x'], event['y'])
 
             # Count the assist
             zone_stats[zone]['assists'] += 1
             zone_stats[zone]['ast_fgm'] += 1
             zone_stats[zone]['ast_fga'] += 1
-        
+
+        # Debug: If no matches, print what names we saw
+        if matched_assists == 0 and len(game_assists) > 0:
+            print(f"\n  DEBUG: No matches for '{player_name}'")
+            print(f"  Looking for variations: {name_variations}")
+            print(f"  All unique passers in games: {sorted(unique_passers)}")
+
+            # Check if any passer looks like it should match
+            potential_matches = [p for p in unique_passers if any(v.lower() in p.lower() for v in name_variations)]
+            if potential_matches:
+                print(f"  Potential matches that didn't work: {potential_matches}")
+
         return dict(zone_stats)
 
     def get_last_processed_game(self, player_id: int) -> Optional[Dict[str, str]]:
@@ -1016,7 +1137,8 @@ class NBAStatsCollector:
     def collect_player_assist_zones(
         self,
         player_name: str,
-        max_games: Optional[int] = None
+        max_games: Optional[int] = None,
+        delay: float = 0.6
     ) -> bool:
         """
         Collect assist zone data for a player using incremental updates.
@@ -1026,6 +1148,7 @@ class NBAStatsCollector:
         Args:
             player_name: Full player name
             max_games: Optional limit on games to process (for testing)
+            delay: Delay in seconds between play-by-play API calls (default: 0.6)
 
         Returns:
             True if successful
@@ -1042,10 +1165,11 @@ class NBAStatsCollector:
         print(f"Collecting assist zones for {player_full_name}...")
 
         # Get all games chronologically (oldest first) with dates
+        # Note: Only returns games where player had AST > 0
         all_games = self._get_player_game_ids_with_dates(player_id)
         if not all_games:
-            print("No games found")
-            return False
+            print("No games with assists")
+            return True  # Return True (success) since there's nothing to process
 
         # Get last processed game using embedded metadata
         last_processed = self.get_last_processed_game(player_id)
@@ -1098,9 +1222,9 @@ class NBAStatsCollector:
                 print(f"Error: {e}")
                 continue
 
-            # Rate limiting
+            # Rate limiting between play-by-play API calls
             if i < len(new_games):
-                time.sleep(0.6)
+                time.sleep(delay)
 
         # Aggregate by zone
         print(f"\nAggregating {len(all_assists)} total assists by zone...")
@@ -1109,6 +1233,13 @@ class NBAStatsCollector:
             player_full_name,
             all_assists
         )
+
+        # Check if any assists were matched
+        if not zone_stats:
+            print(f"WARNING: No assists matched for {player_full_name}!")
+            print(f"  Found {len(all_assists)} total assists in games, but none matched player name")
+            print(f"  This might indicate a name format mismatch in play-by-play data")
+            return False
 
         # Save to database with embedded metadata
         if zone_stats:
@@ -1287,10 +1418,11 @@ class NBAStatsCollector:
         # Player exists - check for new games
         old_games_played = db_record['games_played']
 
-        # Fetch current stats
+        # First, just get overall stats to check games_played (WITHOUT shooting zones)
+        # This is much more efficient - only 1 API call instead of 2
         try:
-            current_stats = self.collect_player_stats(player_name)
-            if not current_stats:
+            overall_stats = self._get_overall_stats(player_id)
+            if not overall_stats:
                 return {
                     'updated': False,
                     'reason': 'No data available',
@@ -1298,18 +1430,29 @@ class NBAStatsCollector:
                     'new_gp': None
                 }
 
-            new_games_played = current_stats['games_played']
+            new_games_played = overall_stats.get('GP')
 
             # Check if games played has increased
             if new_games_played > old_games_played:
-                self.save_to_database(current_stats)
-                return {
-                    'updated': True,
-                    'reason': 'New games played',
-                    'old_gp': old_games_played,
-                    'new_gp': new_games_played
-                }
+                # Player has new games - do full collection WITH shooting zones
+                current_stats = self.collect_player_stats(player_name, collect_shooting_zones=True)
+                if current_stats:
+                    self.save_to_database(current_stats)
+                    return {
+                        'updated': True,
+                        'reason': 'New games played',
+                        'old_gp': old_games_played,
+                        'new_gp': new_games_played
+                    }
+                else:
+                    return {
+                        'updated': False,
+                        'reason': 'No data available',
+                        'old_gp': old_games_played,
+                        'new_gp': None
+                    }
             else:
+                # No new games - skip shooting zones collection entirely
                 return {
                     'updated': False,
                     'reason': 'No new games',
