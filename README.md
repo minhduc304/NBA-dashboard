@@ -23,35 +23,47 @@ collector.collect_and_save_player("Lebron James")
 
 **Update all players (only those with new games):**
 ```bash
-python update_stats.py # Includes shooting zones 
+# Basic update (includes shooting zones)
+python update_stats.py
 
 # Update specific player
 python update_stats.py --player "Devin Booker"
 
-# To add new active players (including free agents)
-python python update_stats.py --include-new
+# Update with assist zones (incremental, only processes new games)
+python update_stats.py --collect-assist-zones --delay 0.6
 
-# To skip free agents entirely (and save api calls):
-python python update_stats.py --rostered-only
+# Update with team defensive zones (all 30 teams)
+python update_stats.py --collect-team-defense --delay 0.6
 
-# To add only new players not present in the DB (to continue data collection)
+# Update EVERYTHING at once (recommended for daily updates)
+python update_stats.py --collect-assist-zones --collect-team-defense --delay 0.6
+
+# Add new active players (including free agents)
+python update_stats.py --include-new
+
+# Skip free agents entirely (saves ~45 API calls)
+python update_stats.py --rostered-only
+
+# Add only new players not present in the DB (to continue collection)
 python update_stats.py --add-new-only
 
-# To add missing shooting zones data
+# Add missing shooting zones data
 python backfill_shooting_zones.py
 
 # Combine arguments as needed
-python update_stats.py --include-new --delay 2.0 --rostered-only  
+python update_stats.py --include-new --delay 2.0 --rostered-only
 ```
 
-### Update Team Stats
-
-**Collecting defensive shooting zones:**
+**If you get rate limited:**
 ```bash
-# Single Team
-collector.collect_and_save_team_defense("Phoenix Suns")
-# All 30 teams 
-collector.collect_all_team_defenses()  
+# Stop the script (Ctrl+C) - progress is saved automatically!
+# Resume with longer delay:
+python update_stats.py --collect-assist-zones --collect-team-defense --delay 2.0
+
+# Or run collections separately:
+python update_stats.py --delay 1.0                    # Player stats first
+python update_stats.py --collect-assist-zones --delay 1.5  # Assist zones (heavy)
+python update_stats.py --collect-team-defense --delay 0.6  # Team defense (30 teams, quick)
 ```
 
 ### Verify Data
@@ -84,22 +96,29 @@ python verify_data.py
 14. First Half Points
 
 ### Shooting Zones
-1. Player Shooting Zones (6 zones)
-  - Restricted Area, In The Paint, Mid-Range, Left Corner 3 Right Corner 3, Above the Break 3
-  - Stores: FGM, FGA, FG%, eFG% per zone
+1. **Player Shooting Zones** (6 zones)
+   - Restricted Area, In The Paint (Non-RA), Mid-Range, Left Corner 3, Right Corner 3, Above the Break 3
+   - Stores: FGM, FGA, FG%, eFG% per zone (per-game averages)
 
-2. Team Defensive Zones (6 zones)
-  - Shows opponent shooting efficiency by zone
-  - Identifies defensive strengths/weaknesses
-  - Stores: Opponent FGM, FGA, FG%, eFG% per zone
+2. **Team Defensive Zones** (6 zones)
+   - Shows opponent shooting efficiency by zone
+   - Identifies defensive strengths/weaknesses
+   - Stores: Opponent FGM, FGA, FG%, eFG% per zone (per-game averages)
 
-**All stats are per-game averages** (except double-doubles and triple-doubles which are totals).
+### Assist Zones
+3. **Player Assist Zones** (6 zones, same zones as above)
+   - Tracks where a player's assists LEAD to made baskets
+   - Example: Does Devin Booker's assists result in corner 3s or paint shots?
+   - Stores: Assists, AST_FGM, AST_FGA per zone (totals)
+   - Also stores: last_game_id, last_game_date, games_analyzed (embedded metadata for incremental updates)
+
+**All stats are per-game averages** (except double-doubles, triple-doubles, and assist zones which are totals).
 
 ## Database
 
-SQLite database with table: `player_stats`, `player_shooting_zones`, `team_defensive_zones`
+SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`
 
-Query example:
+### Query Examples
 ```python
 import sqlite3
 import pandas as pd
@@ -140,6 +159,44 @@ df = pd.read_sql_query("""
     FROM team_defensive_zones
     WHERE team_id = 1610612756
     ORDER BY zone_name
+""", conn)
+print(df)
+conn.close()
+
+# View all player assist zones
+df = pd.read_sql_query("SELECT * FROM player_assist_zones LIMIT 20", conn)
+print(df)
+
+# View specific player's assist zones with their name
+df = pd.read_sql_query("""
+    SELECT
+        ps.player_name,
+        paz.zone_name,
+        paz.assists,
+        paz.ast_fgm,
+        paz.ast_fga,
+        paz.games_analyzed,
+        ROUND(CAST(paz.assists AS FLOAT) / paz.games_analyzed, 2) as assists_per_game
+    FROM player_assist_zones paz
+    JOIN player_stats ps ON paz.player_id = ps.player_id
+    WHERE ps.player_name = 'Devin Booker'
+    ORDER BY paz.assists DESC
+""", conn)
+print(df)
+conn.close()
+
+# Compare two players' assist zone distributions
+df = pd.read_sql_query("""
+    SELECT
+        ps.player_name,
+        paz.zone_name,
+        paz.assists,
+        paz.games_analyzed,
+        ROUND(CAST(paz.assists AS FLOAT) / paz.games_analyzed, 2) as assists_per_game
+    FROM player_assist_zones paz
+    JOIN player_stats ps ON paz.player_id = ps.player_id
+    WHERE ps.player_name IN ('Chris Paul', 'Luka Doncic')
+    ORDER BY ps.player_name, paz.assists DESC
 """, conn)
 print(df)
 conn.close()

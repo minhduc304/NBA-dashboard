@@ -11,10 +11,19 @@ Usage:
     # Update specific player
     python update_stats.py --player "Name"
 
+    # Update with assist zones (incremental, only processes new games)
+    python update_stats.py --collect-assist-zones
+
+    # Update team defensive zones (all 30 teams)
+    python update_stats.py --collect-team-defense
+
+    # Update everything together
+    python update_stats.py --collect-assist-zones --collect-team-defense
+
     # Add new players + update existing (re-checks ALL players with API calls)
     python update_stats.py --include-new --delay 2.0 --rostered-only
 
-    # Add ONLY new players (skip all existing, MOST EFFICIENT for resuming) ✓ RECOMMENDED
+    # Add ONLY new players (skip all existing, MOST EFFICIENT for resuming)
     python update_stats.py --add-new-only --delay 2.0 --rostered-only
 
     # Other options
@@ -33,6 +42,10 @@ def main():
                        help='Also add new active players not in database')
     parser.add_argument('--add-new-only', action='store_true',
                        help='ONLY add new players (skip ALL existing players, most efficient for resuming)')
+    parser.add_argument('--collect-assist-zones', action='store_true',
+                       help='Also collect assist zones (incremental, only processes new games)')
+    parser.add_argument('--collect-team-defense', action='store_true',
+                       help='Also collect team defensive zones (all 30 teams)')
     parser.add_argument('--delay', type=float, default=1.0,
                        help='Delay in seconds between API calls (default: 1.0, increase to 2.0+ if rate limited)')
     parser.add_argument('--rostered-only', action='store_true',
@@ -48,14 +61,22 @@ def main():
         result = collector.update_player_stats(args.player)
 
         if result['updated']:
-            print(f"\n Successfully updated {args.player}")
+            print(f"\n✓ Successfully updated {args.player}")
             print(f"  Games played: {result['old_gp']} → {result['new_gp']}")
             print(f"  Reason: {result['reason']}")
         else:
-            print(f"\n No update needed for {args.player}")
+            print(f"\n○ No update needed for {args.player}")
             print(f"  Reason: {result['reason']}")
             if result['old_gp'] is not None:
                 print(f"  Games played: {result['old_gp']}")
+
+        # Collect assist zones if requested
+        if args.collect_assist_zones:
+            print(f"\nCollecting assist zones for {args.player}...")
+            collector.collect_player_assist_zones(args.player)
+
+        # Note: --collect-team-defense is ignored when --player is specified
+        # Team defense is league-wide, not player-specific
 
     else:
         # Update all players
@@ -79,6 +100,60 @@ def main():
             print("(Use --include-new to also add new active players)")
             print()
             collector.update_all_players(delay=args.delay, only_existing=True)
+
+        # Collect assist zones for all players if requested
+        if args.collect_assist_zones:
+            print("\n" + "=" * 60)
+            print("ASSIST ZONES COLLECTION")
+            print("=" * 60)
+            print("Collecting assist zones for all players in database...")
+            print("(Incremental: only processes new games since last run)")
+            print(f"Using {args.delay}s delay between API calls\n")
+
+            import sqlite3
+            conn = sqlite3.connect(collector.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT player_name FROM player_stats WHERE season = ?", (collector.SEASON,))
+            all_players = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            success_count = 0
+            skip_count = 0
+            error_count = 0
+            total = len(all_players)
+
+            for i, player_name in enumerate(all_players, 1):
+                print(f"[{i}/{total}] {player_name}...")
+
+                try:
+                    result = collector.collect_player_assist_zones(player_name)
+                    if result:
+                        success_count += 1
+                    else:
+                        skip_count += 1
+                except Exception as e:
+                    error_count += 1
+                    print(f"  Error: {e}")
+
+                # Rate limiting between players
+                if i < total:
+                    import time
+                    time.sleep(args.delay)
+
+            print(f"\n{'=' * 60}")
+            print(f"Assist zones collection complete!")
+            print(f"Success: {success_count}, Skipped: {skip_count}, Errors: {error_count}")
+            print(f"{'=' * 60}")
+
+        # Collect team defensive zones if requested
+        if args.collect_team_defense:
+            print("\n" + "=" * 60)
+            print("TEAM DEFENSIVE ZONES COLLECTION")
+            print("=" * 60)
+            print("Collecting defensive zones for all 30 NBA teams...")
+            print(f"Using {args.delay}s delay between API calls\n")
+
+            collector.collect_all_team_defenses(delay=args.delay)
 
 
 if __name__ == "__main__":

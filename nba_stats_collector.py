@@ -83,6 +83,29 @@ class NBAStatsCollector:
             )
         ''')
 
+        # Player assist zones table (where a player's assist lead to baskets)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_assist_zones (
+                player_id INTEGER NOT NULL,
+                season TEXT NOT NULL,
+                zone_name TEXT NOT NULL,
+
+                -- Assist stats by zone (totals, will convert to per-game when querying)
+                assists INTEGER DEFAULT 0,
+                ast_fgm INTEGER DEFAULT 0,
+                ast_fga INTEGER DEFAULT 0,
+
+                -- Embedded metadata (no separate table needed)
+                last_game_id TEXT,
+                last_game_date TEXT,
+                games_analyzed INTEGER DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                PRIMARY KEY (player_id, season, zone_name),
+                FOREIGN KEY (player_id) REFERENCES player_stats(player_id)
+            )
+        ''')
+
         # Player shooting zones table (6 zones, excluding Backcourt)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS player_shooting_zones (
@@ -281,20 +304,20 @@ class NBAStatsCollector:
 
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # Exponential backoff
-                    print(f"  ⚠ Timeout/Connection error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                    print(f" Timeout/Connection error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
                     time.sleep(delay)
                 else:
-                    print(f"  ✗ Failed after {max_retries} attempts: {e}")
+                    print(f" Failed after {max_retries} attempts: {e}")
 
                     # Detect rate limiting
                     if self._consecutive_failures >= 3:
                         self._rate_limited = True
-                        print(f"  ⚠ WARNING: Possible rate limiting detected ({self._consecutive_failures} consecutive failures)")
+                        print(f" WARNING: Possible rate limiting detected ({self._consecutive_failures} consecutive failures)")
 
                     return None
 
             except Exception as e:
-                print(f"  ✗ API error: {e}")
+                print(f"  API error: {e}")
                 return None
 
         return None
@@ -408,6 +431,303 @@ class NBAStatsCollector:
             return zones
 
         return self._api_call_with_retry(fetch)
+    
+    def _coords_to_zone(self, x: float, y: float) -> str:
+        """
+        Convert shot coordinates to zone name
+
+        NBA court coordinate system:
+        - x: -250 to 250 (left to right, in tenths of feet)
+        - y: -47.5 to 422.5 (baseline to baseline, in tenths of feet)
+        - Origin (0,0) is center of hoop
+
+        Args: 
+            x: X coordinate
+            y: Y coordinate
+
+        Returns: 
+            Zone name matching our 6 shooting zones
+        """
+
+        import math
+
+        # Calculate distance from hoop
+        distance = math.sqrt(x**2 + y**2)
+
+        # Restricted Area (4 feet = 40 in tenths)
+        if distance <= 40:
+            return 'Restricted Area'
+
+        # In The Paint i.e. within key
+        if abs(x) <= 80 and y <= 190 and distance > 40:
+            return 'In The Paint (Non-RA)'
+
+        is_three_pointer = False
+
+        # Corner 3: 22 feet (220 in tenths)
+        if abs(x) >= 220 and y <= 90:
+            is_three_pointer = True
+            if x < 0:
+                return 'Left Corner 3'
+            else:
+                return 'Right Corner 3'
+        
+        # Arc 3: 23.75 feet (237.5 in tenths)
+        elif distance >= 237.5:
+            is_three_pointer = True
+            return 'Above the Break 3'
+        
+        # Everything else inside the arc is mid-range
+        return 'Mid-Range'
+
+    def _get_player_game_ids(self, player_id: int) -> List[str]:
+        """
+        Get all game IDs for a player in the current session
+
+        Args:
+            player_id: NBA API player ID
+
+        Returns:
+            List of game ID strings
+        """
+
+        from nba_api.stats.endpoints import playergamelog
+
+        try:
+            gamelog = playergamelog.PlayerGameLog(
+                player_id=player_id,
+                season=self.SEASON,
+                timeout=30
+            )
+
+            df = gamelog.player_game_log.get_data_frame()
+
+            if df.empty:
+                return []
+
+            # Return list of game IDs
+            return df['Game_ID'].tolist()
+
+        except Exception as e:
+            print(f"Error fetching game log: {e}")
+            return []
+
+    def _get_player_game_ids_with_dates(self, player_id: int) -> List[Dict[str, str]]:
+        """
+        Get all game IDs with dates for a player, ordered chronologically (oldest first).
+
+        This is used for incremental assist zone collection to process games in order.
+
+        Args:
+            player_id: NBA API player ID
+
+        Returns:
+            List of dicts with 'game_id' and 'game_date' keys, sorted oldest to newest
+        """
+        from nba_api.stats.endpoints import playergamelog
+
+        try:
+            gamelog = playergamelog.PlayerGameLog(
+                player_id=player_id,
+                season=self.SEASON,
+                timeout=30
+            )
+
+            df = gamelog.player_game_log.get_data_frame()
+
+            if df.empty:
+                return []
+
+            # Extract game_id and game_date, sort chronologically (oldest first)
+            # Game log returns newest first, so we reverse
+            games = [
+                {'game_id': row['Game_ID'], 'game_date': row['GAME_DATE']}
+                for _, row in df.iterrows()
+            ]
+
+            # Reverse to get chronological order (oldest first)
+            games.reverse()
+
+            return games
+
+        except Exception as e:
+            print(f"Error fetching game log with dates: {e}")
+            return []
+
+    def _get_game_assist_events(self, game_id: str) -> List[Dict]:
+        """
+        Parse a game's play-by-play to extract all assist events.
+
+        Args: 
+            game_id: NBA game ID
+
+        Returns:
+            List of assist events with shooter, passer and location data
+        """
+        from nba_api.stats.endpoints import playbyplayv3
+        import re 
+
+        try:
+            # Fetch play-by-play
+            pbp = playbyplayv3.PlayByPlayV3(game_id=game_id, timeout=30)
+            df = pbp.play_by_play.get_data_frame()
+
+            if df.empty:
+                return []
+            
+            assists = []
+
+            # Regex to parse assist from description
+            # Example: "Stephen Curry 26' 3PT Jump Shot (3 PTS) (Draymond Green 5 AST)"
+            assist_pattern = re.compile(
+                r"(?P<shooter>[\w\s.']+?)\s+"    # Shooter name
+                r"(?P<distance>\d+)'?\s*"        # Distance
+                r"(?P<shot_type>.*?)\s+"         # Shot type
+                r"\((?P<points>\d+)\s+PTS\)\s+"  # Points
+                r"\((?P<passer>[\w\s.']+?)\s+"   # Passer name
+                r"(?P<ast>\d+)\s+AST\)"          # Assist number
+            )
+
+            for _,row in df.iterrows():
+                # Only look at made field goals
+                if row['shotResult'] != 'Made':
+                    continue
+
+                # Check for assist in description
+                description = row['description']
+                if not description or 'AST' not in description:
+                    continue
+
+                match = assist_pattern.search(description)
+                if not match:
+                    continue
+
+                # Extract data
+                assists.append({
+                    'game_id': game_id,
+                    'shooter_name': match.group('shooter').strip(),
+                    'passer_name': match.group('passer').strip(),
+                    'x': row['xLegacy'] if row['xLegacy'] is not None else 0,
+                    'y': row['yLegacy'] if row['yLegacy'] is not None else 0,
+                    'period': row['period'],
+                    'description': description
+                })
+            
+            return assists
+        
+        except Exception as e:
+            print(f"Error parsing game {game_id}: {e}")
+            return []
+        
+    def _build_player_name_map(self) -> Dict[str,int]:
+        """
+        Build a mapping of player names to player IDs.
+        Handles various name formats.
+
+        Returns: 
+            Dict mapping name variations to player_id
+        """
+        name_map = {}
+
+        all_players = players.get_active_players()
+
+        for p in all_players:
+            player_id = p['id']
+
+            # Full name
+            name_map[p['full_name']] = player_id
+
+            # First Last (without middle initial)
+            first = p['first_name']
+            last = p['last_name']
+            name_map[f"{first} {last}"] = player_id
+
+            # Hadle Jr., Sr, etc.
+            full_clean = p['full_name'].replace('Jr.', '').replace('Sr.', '').replace('III', '').replace('II', '')
+            name_map[full_clean] = player_id
+
+        return name_map
+    
+    def _aggregate_assists_by_zone(
+            self,
+            player_id: int,
+            player_name: str,
+            game_assists: List[Dict]
+    ) -> Dict[str, Dict]:
+        """
+        Aggregate assist events by zone for a specific player
+
+        Args:
+            player_id: Target player's ID
+            player_name: Target player's name
+            game_assists: All assist events from games
+
+        Returns:
+            Dict of zone_name => {assists, fgm, fga}
+        """
+        from collections import defaultdict
+
+        zone_stats = defaultdict(lambda: {
+            'assists': 0,
+            'ast_fgm': 0,
+            'ast_fga': 0,
+        })
+
+        # Build name variations for matching 
+        name_variations = {
+            player_name,
+            player_name.replace('Jr.', '').replace('Sr', ''),
+            # Add more variations as needed
+        }
+
+        for event in game_assists:
+            # Check if this player made the assist
+            passer = event['passer_name'].strip()
+
+            # Try to match passer_name
+            if passer not in name_variations:
+                # Try partial match (last name)
+                if not any(passer.endswith(name.split()[-1]) for name in name_variations):
+                    continue
+
+            # Determine zone from coordinates 
+            zone = self._coords_to_zone(event['x'], event['y'])
+
+            # Count the assist
+            zone_stats[zone]['assists'] += 1
+            zone_stats[zone]['ast_fgm'] += 1
+            zone_stats[zone]['ast_fga'] += 1
+        
+        return dict(zone_stats)
+
+    def get_last_processed_game(self, player_id: int) -> Optional[Dict[str, str]]:
+        """
+        Get the last processed game for assist zones using embedded metadata.
+
+        Args:
+            player_id: Player's NBA API ID
+
+        Returns:
+            Dict with 'game_id' and 'game_date', or None if no games processed yet
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get metadata from any zone row (all zones have same metadata)
+        cursor.execute('''
+            SELECT last_game_id, last_game_date
+            FROM player_assist_zones
+            WHERE player_id = ? AND season = ?
+            LIMIT 1
+        ''', (player_id, self.SEASON))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row and row[0]:  # If last_game_id is not None
+            return {'game_id': row[0], 'game_date': row[1]}
+
+        return None
 
     def _get_team_defensive_zones(self, team_id: int) -> Optional[List[Dict]]:
         """
@@ -540,6 +860,58 @@ class NBAStatsCollector:
         conn.commit()
         conn.close()
 
+    def save_player_assist_zones(
+        self,
+        player_id: int,
+        zone_stats: Dict[str, Dict],
+        games_analyzed: int,
+        last_game_id: str,
+        last_game_date: str
+    ):
+        """
+        Save or update player assist zone data with embedded metadata.
+
+        Args:
+            player_id: Player's ID
+            zone_stats: Dict of zone_name -> stats
+            games_analyzed: Total number of games analyzed (including previously processed)
+            last_game_id: ID of the most recent game processed
+            last_game_date: Date of the most recent game processed
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for zone_name, stats in zone_stats.items():
+            cursor.execute('''
+                INSERT INTO player_assist_zones (
+                    player_id, season, zone_name,
+                    assists, ast_fgm, ast_fga,
+                    last_game_id, last_game_date, games_analyzed,
+                    last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(player_id, season, zone_name) DO UPDATE SET
+                    assists = assists + excluded.assists,
+                    ast_fgm = ast_fgm + excluded.ast_fgm,
+                    ast_fga = ast_fga + excluded.ast_fga,
+                    last_game_id = excluded.last_game_id,
+                    last_game_date = excluded.last_game_date,
+                    games_analyzed = excluded.games_analyzed,
+                    last_updated = CURRENT_TIMESTAMP
+            ''', (
+                player_id,
+                self.SEASON,
+                zone_name,
+                stats['assists'],
+                stats['ast_fgm'],
+                stats['ast_fga'],
+                last_game_id,
+                last_game_date,
+                games_analyzed
+            ))
+
+        conn.commit()
+        conn.close()
+
     def collect_and_save_player(self, player_name: str) -> bool:
         """
         Collect stats for a player and save to database.
@@ -640,6 +1012,128 @@ class NBAStatsCollector:
         print(f"Collection complete!")
         print(f"Success: {success_count}, Errors: {error_count}")
         print(f"{'=' * 60}")
+
+    def collect_player_assist_zones(
+        self,
+        player_name: str,
+        max_games: Optional[int] = None
+    ) -> bool:
+        """
+        Collect assist zone data for a player using incremental updates.
+
+        Only processes games that haven't been analyzed yet (using embedded metadata).
+
+        Args:
+            player_name: Full player name
+            max_games: Optional limit on games to process (for testing)
+
+        Returns:
+            True if successful
+        """
+        # Find player
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            print(f"Player '{player_name}' not found")
+            return False
+
+        player_id = player_dict[0]['id']
+        player_full_name = player_dict[0]['full_name']
+
+        print(f"Collecting assist zones for {player_full_name}...")
+
+        # Get all games chronologically (oldest first) with dates
+        all_games = self._get_player_game_ids_with_dates(player_id)
+        if not all_games:
+            print("No games found")
+            return False
+
+        # Get last processed game using embedded metadata
+        last_processed = self.get_last_processed_game(player_id)
+
+        # Filter to only new games (after last processed)
+        if last_processed:
+            # Find index of last processed game
+            last_game_id = last_processed['game_id']
+            try:
+                last_idx = next(i for i, g in enumerate(all_games) if g['game_id'] == last_game_id)
+                new_games = all_games[last_idx + 1:]  # Games after last processed
+                previous_games_count = last_idx + 1
+            except StopIteration:
+                # Last processed game not found (shouldn't happen)
+                print(f"Warning: Last processed game {last_game_id} not found in current season")
+                new_games = all_games
+                previous_games_count = 0
+        else:
+            # No games processed yet - process all
+            new_games = all_games
+            previous_games_count = 0
+
+        if not new_games:
+            print(f"All {len(all_games)} games already processed.")
+            return True
+
+        if max_games:
+            new_games = new_games[:max_games]
+
+        print(f"Found {len(new_games)} new games to process (out of {len(all_games)} total)")
+
+        # Process each new game
+        all_assists = []
+
+        for i, game in enumerate(new_games, 1):
+            game_id = game['game_id']
+            print(f"  [{i}/{len(new_games)}] Game {game_id}...", end=" ")
+
+            try:
+                # Get assists from this game
+                game_assists = self._get_game_assist_events(game_id)
+
+                if game_assists:
+                    all_assists.extend(game_assists)
+                    print(f"{len(game_assists)} assists")
+                else:
+                    print("No assists")
+
+            except Exception as e:
+                print(f"Error: {e}")
+                continue
+
+            # Rate limiting
+            if i < len(new_games):
+                time.sleep(0.6)
+
+        # Aggregate by zone
+        print(f"\nAggregating {len(all_assists)} total assists by zone...")
+        zone_stats = self._aggregate_assists_by_zone(
+            player_id,
+            player_full_name,
+            all_assists
+        )
+
+        # Save to database with embedded metadata
+        if zone_stats:
+            # Calculate total games analyzed
+            total_games_analyzed = previous_games_count + len(new_games)
+
+            # Get last game info
+            last_game = new_games[-1]
+
+            self.save_player_assist_zones(
+                player_id,
+                zone_stats,
+                total_games_analyzed,
+                last_game['game_id'],
+                last_game['game_date']
+            )
+
+            print(f"Saved assist zones (total games analyzed: {total_games_analyzed}):\n")
+
+            for zone, stats in sorted(zone_stats.items(),
+                                    key=lambda x: x[1]['assists'], reverse=True):
+                print(f"  {zone:25} {stats['assists']:3} assists")
+
+        return True
+
 
     def backfill_player_shooting_zones(self, delay: float = 0.6, skip_existing: bool = True):
         """
