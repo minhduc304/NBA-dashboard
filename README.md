@@ -32,11 +32,17 @@ python update_stats.py --player "Devin Booker"
 # Update with assist zones (incremental, only processes new games)
 python update_stats.py --collect-assist-zones --delay 0.6
 
-# Update with team defensive zones (all 30 teams)
+# ONLY update team defensive zones (all 30 teams, skips player updates)
 python update_stats.py --collect-team-defense --delay 0.6
 
+# ONLY update play types (incremental, skips player updates)
+python update_stats.py --collect-play-types --delay 1.0
+
+# ONLY update both (skips player updates)
+python update_stats.py --collect-team-defense --collect-play-types --delay 1.0
+
 # Update EVERYTHING at once (recommended for daily updates)
-python update_stats.py --collect-assist-zones --collect-team-defense --delay 0.6
+python update_stats.py --collect-assist-zones --collect-team-defense --collect-play-types --delay 1.0
 
 # Add new active players (including free agents)
 python update_stats.py --include-new
@@ -61,9 +67,10 @@ python update_stats.py --include-new --delay 2.0 --rostered-only
 python update_stats.py --collect-assist-zones --collect-team-defense --delay 2.0
 
 # Or run collections separately:
-python update_stats.py --delay 1.0                    # Player stats first
-python update_stats.py --collect-assist-zones --delay 1.5  # Assist zones (heavy)
-python update_stats.py --collect-team-defense --delay 0.6  # Team defense (30 teams, quick)
+python update_stats.py --delay 1.0                         # Player stats only
+python update_stats.py --collect-assist-zones --delay 1.5  # Assist zones only (heavy, includes player updates)
+python update_stats.py --collect-team-defense --delay 0.6  # Team defense only (30 teams, quick)
+python update_stats.py --collect-play-types --delay 1.0    # Play types only (incremental, skips player updates)
 ```
 
 ### Verify Data
@@ -76,7 +83,9 @@ python verify_data.py
 - `nba_stats_collector.py` - Main data collection module
 - `update_stats.py` - Efficient update script (recommended for daily use)
 - `verify_data.py` - Database verification script
+- `query_play_types.py` - Query and analyze play type statistics
 - `nba_stats.db` - SQLite database (created after first run)
+- `docs/PLAY_TYPES_GUIDE.md` - Complete play types documentation
 
 ## Collected Stats
 ### Basic stats
@@ -112,11 +121,19 @@ python verify_data.py
    - Stores: Assists, AST_FGM, AST_FGA per zone (totals)
    - Also stores: last_game_id, last_game_date, games_analyzed (embedded metadata for incremental updates)
 
+### Play Types (Synergy)
+4. **Player Play Types** (10 play types)
+   - Isolation, Transition, Pick & Roll Ball Handler, Pick & Roll Roll Man, Post Up, Spot Up, Handoff, Cut, Off Screen, Putbacks
+   - Shows **scoring breakdown** by play type (what % of points come from each play type)
+   - Stores: Points, PPG, Possessions, Poss/G, PPP, FG%, % of Total Points
+   - Example: Kevin Durant gets 22% from Spot Up, 19% from Isolation
+   - Query with: `python query_play_types.py "Player Name"`
+
 **All stats are per-game averages** (except double-doubles, triple-doubles, and assist zones which are totals).
 
 ## Database
 
-SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`
+SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`, `player_play_types`
 
 ### Query Examples
 ```python
@@ -200,6 +217,28 @@ df = pd.read_sql_query("""
 """, conn)
 print(df)
 conn.close()
+
+# View player play types breakdown
+df = pd.read_sql_query("""
+    SELECT
+        ps.player_name,
+        ppt.play_type,
+        ppt.points_per_game,
+        ppt.pct_of_total_points,
+        ppt.ppp,
+        ppt.fg_pct
+    FROM player_play_types ppt
+    JOIN player_stats ps ON ppt.player_id = ps.player_id
+    WHERE ps.player_name = 'Kevin Durant'
+    ORDER BY ppt.points_per_game DESC
+""", conn)
+print(df)
+conn.close()
+
+# Or use the query script for formatted output:
+# python query_play_types.py "Kevin Durant"
+# python query_play_types.py --compare "Kevin Durant" "LeBron James"
+# python query_play_types.py --top Isolation --limit 15
 ```
 
 

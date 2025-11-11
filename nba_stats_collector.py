@@ -11,7 +11,8 @@ from nba_api.stats.endpoints import (
     playerdashboardbygeneralsplits,
     playerdashboardbyshootingsplits,
     teamdashboardbyshootingsplits,
-    commonteamroster
+    commonteamroster,
+    synergyplaytypes
 )
 import time
 from requests.exceptions import ReadTimeout, ConnectionError
@@ -142,6 +143,37 @@ class NBAStatsCollector:
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
                 PRIMARY KEY (team_id, season, zone_name)
+            )
+        ''')
+
+        # Player play types table (Synergy play type statistics)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_play_types (
+                player_id INTEGER NOT NULL,
+                season TEXT NOT NULL,
+                play_type TEXT NOT NULL,
+
+                -- Scoring stats
+                points REAL,
+                points_per_game REAL,
+
+                -- Possession stats
+                possessions REAL,
+                poss_per_game REAL,
+
+                -- Efficiency stats
+                ppp REAL,
+                fg_pct REAL,
+
+                -- Breakdown
+                pct_of_total_points REAL,
+
+                -- Metadata
+                games_played INTEGER,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                PRIMARY KEY (player_id, season, play_type),
+                FOREIGN KEY (player_id) REFERENCES player_stats(player_id)
             )
         ''')
 
@@ -1133,6 +1165,259 @@ class NBAStatsCollector:
         print(f"Collection complete!")
         print(f"Success: {success_count}, Errors: {error_count}")
         print(f"{'=' * 60}")
+
+    def collect_player_play_types(self, player_name: str, delay: float = 0.6, force: bool = False) -> bool:
+        """
+        Collect Synergy play type statistics for a player (incremental).
+
+        Only collects if player has played new games since last collection,
+        unless force=True.
+
+        Fetches all 10 play types (Isolation, Transition, Pick & Roll, etc.)
+        and calculates scoring breakdown by play type.
+
+        Args:
+            player_name: Full player name
+            delay: Delay between API calls (seconds)
+            force: If True, collect even if no new games (default: False)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Play types to collect (excluding Misc)
+        PLAY_TYPES = [
+            'Isolation',
+            'Transition',
+            'PRBallHandler',
+            'PRRollman',
+            'Postup',
+            'Spotup',
+            'Handoff',
+            'Cut',
+            'OffScreen',
+            'OffRebound'
+        ]
+
+        # Find player
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            print(f"Player '{player_name}' not found")
+            return False
+
+        player_id = player_dict[0]['id']
+        player_full_name = player_dict[0]['full_name']
+
+        # Check if we should skip (intelligent caching with games_played tracking)
+        if not force:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Check for existing data or NO_DATA marker
+            cursor.execute("""
+                SELECT play_type, games_played
+                FROM player_play_types
+                WHERE player_id = ? AND season = ?
+                LIMIT 1
+            """, (player_id, self.SEASON))
+
+            result = cursor.fetchone()
+
+            if result:
+                stored_play_type = result[0]
+                stored_gp_value = result[1]
+
+                # Handle potential bytes
+                if isinstance(stored_gp_value, bytes):
+                    stored_gp = int.from_bytes(stored_gp_value, byteorder='little') if len(stored_gp_value) > 0 else 0
+                else:
+                    stored_gp = int(stored_gp_value) if stored_gp_value is not None else 0
+
+                # Get current games played from player_stats
+                cursor.execute("""
+                    SELECT games_played
+                    FROM player_stats
+                    WHERE player_id = ? AND season = ?
+                """, (player_id, self.SEASON))
+
+                stats_result = cursor.fetchone()
+                current_gp = int(stats_result[0]) if stats_result and stats_result[0] is not None else 0
+
+                conn.close()
+
+                # If we have real play type data (not NO_DATA marker), skip
+                if stored_play_type != 'NO_DATA':
+                    print(f"Skipped (already collected)")
+                    return 'skipped'
+
+                # If we have NO_DATA marker but games_played hasn't increased, skip
+                if stored_play_type == 'NO_DATA' and current_gp <= stored_gp:
+                    print(f"Skipped (hasn't qualified, GP: {current_gp})")
+                    return 'skipped'
+
+                # If games_played increased, re-check (might qualify now)
+                if stored_play_type == 'NO_DATA' and current_gp > stored_gp:
+                    print(f"Re-checking (GP increased: {stored_gp} → {current_gp}, might qualify now)")
+            else:
+                conn.close()
+
+        print(f"Collecting play type stats for {player_full_name}...")
+        print(f"Fetching {len(PLAY_TYPES)} play types...\n")
+
+        all_play_types = []
+        games_played = None
+
+        for i, play_type in enumerate(PLAY_TYPES, 1):
+            print(f"  [{i}/{len(PLAY_TYPES)}] {play_type:15}...", end=" ")
+
+            try:
+                # Fetch play type data
+                synergy = synergyplaytypes.SynergyPlayTypes(
+                    league_id='00',
+                    season=self.SEASON,
+                    season_type_all_star='Regular Season',
+                    player_or_team_abbreviation='P',
+                    per_mode_simple='PerGame',
+                    play_type_nullable=play_type,
+                    type_grouping_nullable='offensive'
+                )
+
+                df = synergy.synergy_play_type.get_data_frame()
+
+                # Find player in results
+                player_data = df[df['PLAYER_NAME'] == player_full_name]
+
+                if not player_data.empty:
+                    row = player_data.iloc[0]
+
+                    # Get games played (should be same across all play types)
+                    if games_played is None:
+                        games_played = int(row['GP'])
+
+                    all_play_types.append({
+                        'play_type': play_type,
+                        'points_per_game': float(row['PTS']),
+                        'poss_per_game': float(row['POSS']),
+                        'ppp': float(row['PPP']),
+                        'fg_pct': float(row['FG_PCT']),
+                        'games_played': int(row['GP'])
+                    })
+
+                    print(f"✓ {row['PTS']:.2f} ppg")
+                else:
+                    print("○ No data")
+
+            except Exception as e:
+                print(f"Error: {e}")
+                continue
+
+            # Rate limiting
+            if i < len(PLAY_TYPES):
+                time.sleep(delay)
+
+        if not all_play_types:
+            print(f"\nNo play type data found (hasn't qualified)")
+
+            # Save NO_DATA marker with current games_played to avoid re-checking
+            # until they play more games (when they might qualify)
+            if not force:
+                # Get current games_played from player_stats
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT games_played
+                    FROM player_stats
+                    WHERE player_id = ? AND season = ?
+                """, (player_id, self.SEASON))
+                result = cursor.fetchone()
+                current_gp = int(result[0]) if result and result[0] is not None else 0
+                conn.close()
+
+                # Save NO_DATA marker
+                marker = [{
+                    'play_type': 'NO_DATA',
+                    'points': 0.0,
+                    'points_per_game': 0.0,
+                    'possessions': 0.0,
+                    'poss_per_game': 0.0,
+                    'ppp': 0.0,
+                    'fg_pct': 0.0,
+                    'pct_of_total_points': 0.0,
+                    'games_played': current_gp
+                }]
+                self.save_player_play_types(player_id, marker)
+                print(f"Saved marker (GP: {current_gp}, will re-check when GP increases)")
+
+            return False
+
+        # Calculate totals and percentages
+        total_ppg = sum(pt['points_per_game'] for pt in all_play_types)
+
+        for pt in all_play_types:
+            pt['points'] = pt['points_per_game'] * pt['games_played']
+            pt['possessions'] = pt['poss_per_game'] * pt['games_played']
+            pt['pct_of_total_points'] = (pt['points_per_game'] / total_ppg * 100) if total_ppg > 0 else 0
+
+        # Save to database
+        self.save_player_play_types(player_id, all_play_types)
+
+        print(f"\n✓ Saved {len(all_play_types)} play types for {player_full_name}")
+        return True
+
+    def save_player_play_types(self, player_id: int, play_types: List[Dict]):
+        """
+        Save play type stats to database.
+
+        Args:
+            player_id: NBA API player ID
+            play_types: List of play type stat dictionaries
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # If saving real play types (not NO_DATA marker), delete any NO_DATA markers first
+        if play_types and play_types[0]['play_type'] != 'NO_DATA':
+            cursor.execute('''
+                DELETE FROM player_play_types
+                WHERE player_id = ? AND season = ? AND play_type = 'NO_DATA'
+            ''', (player_id, self.SEASON))
+
+        for pt in play_types:
+            cursor.execute('''
+                INSERT INTO player_play_types (
+                    player_id, season, play_type,
+                    points, points_per_game,
+                    possessions, poss_per_game,
+                    ppp, fg_pct,
+                    pct_of_total_points,
+                    games_played,
+                    last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(player_id, season, play_type) DO UPDATE SET
+                    points = excluded.points,
+                    points_per_game = excluded.points_per_game,
+                    possessions = excluded.possessions,
+                    poss_per_game = excluded.poss_per_game,
+                    ppp = excluded.ppp,
+                    fg_pct = excluded.fg_pct,
+                    pct_of_total_points = excluded.pct_of_total_points,
+                    games_played = excluded.games_played,
+                    last_updated = CURRENT_TIMESTAMP
+            ''', (
+                int(player_id),
+                self.SEASON,
+                pt['play_type'],
+                float(pt['points']),
+                float(pt['points_per_game']),
+                float(pt['possessions']),
+                float(pt['poss_per_game']),
+                float(pt['ppp']),
+                float(pt['fg_pct']),
+                float(pt['pct_of_total_points']),
+                int(pt['games_played'])
+            ))
+
+        conn.commit()
+        conn.close()
 
     def collect_player_assist_zones(
         self,
