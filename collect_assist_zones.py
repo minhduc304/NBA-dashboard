@@ -17,19 +17,16 @@ print("ASSIST ZONES COLLECTION ONLY")
 print("=" * 60)
 print(f"Using {args.delay}s delay between API calls\n")
 
-# Get all players with their current games_played count
+# Get all players from player_stats
 conn = sqlite3.connect(collector.db_path)
 cursor = conn.cursor()
 cursor.execute("""
-    SELECT ps.player_id, ps.player_name, ps.games_played,
-            COALESCE(MAX(paz.games_analyzed), 0) as games_analyzed
-    FROM player_stats ps
-    LEFT JOIN player_assist_zones paz
-        ON ps.player_id = paz.player_id AND paz.season = ?
-    WHERE ps.season = ?
-    GROUP BY ps.player_id, ps.player_name, ps.games_played
-""", (collector.SEASON, collector.SEASON))
-all_players = cursor.fetchall()
+    SELECT player_name
+    FROM player_stats
+    WHERE season = ?
+    ORDER BY player_name
+""", (collector.SEASON,))
+all_players = [row[0] for row in cursor.fetchall()]
 conn.close()
 
 success_count = 0
@@ -37,22 +34,22 @@ skip_count = 0
 error_count = 0
 total = len(all_players)
 
-for i, (_, player_name, games_played, games_analyzed) in enumerate(all_players, 1):
-    print(f"[{i}/{total}] {player_name}...", end=" ")
+for i, player_name in enumerate(all_players, 1):
+    print(f"[{i}/{total}] {player_name}... ", end="")
 
-    # Skip if already analyzed all games
-    if games_analyzed and games_analyzed >= games_played:
-        skip_count += 1
-        print(f"Skipped (all {games_played} games already analyzed)")
-        continue
-
-    # Player has new games to analyze
+    # Let collect_player_assist_zones handle the skip logic
+    # It knows the correct number of games with assists vs games analyzed
     try:
         result = collector.collect_player_assist_zones(player_name, delay=args.delay)
-        if result:
+
+        # Check status to properly categorize
+        if result['status'] == 'collected' or result['status'] == 'no_match':
             success_count += 1
-        else:
+        elif result['status'] == 'skipped' or result['status'] == 'no_assists':
             skip_count += 1
+        else:  # error
+            error_count += 1
+
     except Exception as e:
         error_count += 1
         print(f"Error: {e}")

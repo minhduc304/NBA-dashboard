@@ -1034,6 +1034,7 @@ class NBAStatsCollector:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
+        # First, save/update zones that had assists in the new games
         for zone_name, stats in zone_stats.items():
             cursor.execute('''
                 INSERT INTO player_assist_zones (
@@ -1061,6 +1062,18 @@ class NBAStatsCollector:
                 last_game_date,
                 games_analyzed
             ))
+
+        # CRITICAL FIX: Update metadata for ALL existing zones, even those without new assists
+        # This ensures consistent last_game_id across all zones for incremental updates
+        cursor.execute('''
+            UPDATE player_assist_zones
+            SET last_game_id = ?,
+                last_game_date = ?,
+                games_analyzed = ?,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE player_id = ?
+              AND season = ?
+        ''', (last_game_id, last_game_date, games_analyzed, player_id, self.SEASON))
 
         conn.commit()
         conn.close()
@@ -1424,7 +1437,7 @@ class NBAStatsCollector:
         player_name: str,
         max_games: Optional[int] = None,
         delay: float = 0.6
-    ) -> bool:
+    ) -> Dict[str, any]:
         """
         Collect assist zone data for a player using incremental updates.
 
@@ -1436,13 +1449,14 @@ class NBAStatsCollector:
             delay: Delay in seconds between play-by-play API calls (default: 0.6)
 
         Returns:
-            True if successful
+            Dict with 'success' (bool), 'status' (str), 'games_processed' (int)
+            Status can be: 'collected', 'skipped', 'no_assists', 'error'
         """
         # Find player
         player_dict = players.find_players_by_full_name(player_name)
         if not player_dict:
             print(f"Player '{player_name}' not found")
-            return False
+            return {'success': False, 'status': 'error', 'games_processed': 0}
 
         player_id = player_dict[0]['id']
         player_full_name = player_dict[0]['full_name']
@@ -1454,7 +1468,7 @@ class NBAStatsCollector:
         all_games = self._get_player_game_ids_with_dates(player_id)
         if not all_games:
             print("No games with assists")
-            return True  # Return True (success) since there's nothing to process
+            return {'success': True, 'status': 'no_assists', 'games_processed': 0}
 
         # Get last processed game using embedded metadata
         last_processed = self.get_last_processed_game(player_id)
@@ -1479,7 +1493,7 @@ class NBAStatsCollector:
 
         if not new_games:
             print(f"All {len(all_games)} games already processed.")
-            return True
+            return {'success': True, 'status': 'skipped', 'games_processed': 0}
 
         if max_games:
             new_games = new_games[:max_games]
@@ -1519,36 +1533,65 @@ class NBAStatsCollector:
             all_assists
         )
 
+        # Calculate total games analyzed
+        total_games_analyzed = previous_games_count + len(new_games)
+
+        # Get last game info
+        last_game = new_games[-1]
+
         # Check if any assists were matched
         if not zone_stats:
             print(f"WARNING: No assists matched for {player_full_name}!")
             print(f"  Found {len(all_assists)} total assists in games, but none matched player name")
-            print(f"  This might indicate a name format mismatch in play-by-play data")
-            return False
+            print(f"  This might indicate a name format mismatch or data inconsistency")
+            print(f"  Marking games as processed to avoid infinite retries...\n")
+
+            # Still update metadata to mark these games as processed
+            # This prevents infinite retries on players with data inconsistencies
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE player_assist_zones
+                SET last_game_id = ?,
+                    last_game_date = ?,
+                    games_analyzed = ?,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE player_id = ? AND season = ?
+            ''', (last_game['game_id'], last_game['game_date'], total_games_analyzed, player_id, self.SEASON))
+
+            # If no existing rows, create a dummy row to track processing
+            if cursor.rowcount == 0:
+                cursor.execute('''
+                    INSERT INTO player_assist_zones (
+                        player_id, season, zone_name,
+                        assists, ast_fgm, ast_fga,
+                        last_game_id, last_game_date, games_analyzed,
+                        last_updated
+                    ) VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (player_id, self.SEASON, 'Restricted Area',
+                      last_game['game_id'], last_game['game_date'], total_games_analyzed))
+
+            conn.commit()
+            conn.close()
+
+            return {'success': True, 'status': 'no_match', 'games_processed': len(new_games)}
 
         # Save to database with embedded metadata
-        if zone_stats:
-            # Calculate total games analyzed
-            total_games_analyzed = previous_games_count + len(new_games)
+        self.save_player_assist_zones(
+            player_id,
+            zone_stats,
+            total_games_analyzed,
+            last_game['game_id'],
+            last_game['game_date']
+        )
 
-            # Get last game info
-            last_game = new_games[-1]
+        print(f"Saved assist zones (total games analyzed: {total_games_analyzed}):\n")
 
-            self.save_player_assist_zones(
-                player_id,
-                zone_stats,
-                total_games_analyzed,
-                last_game['game_id'],
-                last_game['game_date']
-            )
+        for zone, stats in sorted(zone_stats.items(),
+                                key=lambda x: x[1]['assists'], reverse=True):
+            print(f"  {zone:25} {stats['assists']:3} assists")
 
-            print(f"Saved assist zones (total games analyzed: {total_games_analyzed}):\n")
-
-            for zone, stats in sorted(zone_stats.items(),
-                                    key=lambda x: x[1]['assists'], reverse=True):
-                print(f"  {zone:25} {stats['assists']:3} assists")
-
-        return True
+        return {'success': True, 'status': 'collected', 'games_processed': len(new_games)}
 
 
     def backfill_player_shooting_zones(self, delay: float = 0.6, skip_existing: bool = True):
