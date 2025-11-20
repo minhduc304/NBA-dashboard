@@ -177,6 +177,35 @@ class NBAStatsCollector:
             )
         ''')
 
+        # Team defensive play types table (how teams defend against different play types)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS team_defensive_play_types (
+                team_id INTEGER NOT NULL,
+                season TEXT NOT NULL,
+                play_type TEXT NOT NULL,
+
+                -- Possession stats (what opponents do against this team)
+                poss_pct REAL,           -- % of opponent possessions using this play type
+                possessions REAL,        -- Total possessions faced
+                poss_per_game REAL,      -- Possessions per game
+
+                -- Efficiency stats (opponent efficiency against this defense)
+                ppp REAL,                -- Points per possession allowed
+                fg_pct REAL,             -- FG% allowed
+                efg_pct REAL,            -- eFG% allowed
+
+                -- Scoring stats
+                points REAL,             -- Total points allowed
+                points_per_game REAL,    -- PPG allowed from this play type
+
+                -- Metadata
+                games_played INTEGER,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                PRIMARY KEY (team_id, season, play_type)
+            )
+        ''')
+
         conn.commit()
         conn.close()
 
@@ -1179,6 +1208,54 @@ class NBAStatsCollector:
         print(f"Success: {success_count}, Errors: {error_count}")
         print(f"{'=' * 60}")
 
+    def collect_all_team_defensive_play_types(self, delay: float = 0.8, force: bool = False):
+        """
+        Collect defensive play type stats for all NBA teams.
+
+        Args:
+            delay: Delay between API calls to avoid rate limiting (seconds)
+            force: If True, re-collect even if data exists (default: False)
+        """
+        print(f"Fetching all NBA teams for {self.SEASON} season...")
+
+        all_nba_teams = teams.get_teams()
+        total = len(all_nba_teams)
+
+        print(f"Found {total} teams. Starting collection...")
+        print(f"Using {delay}s delay between play types to avoid rate limiting.\n")
+
+        collected_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for i, team in enumerate(all_nba_teams, 1):
+            team_name = team['full_name']
+
+            print(f"[{i}/{total}] {team_name}...", end=" ")
+
+            try:
+                result = self.collect_team_defensive_play_types(team_name, delay=delay, force=force)
+
+                if result == 'collected':
+                    collected_count += 1
+                elif result == 'skipped':
+                    skipped_count += 1
+                else:
+                    error_count += 1
+
+            except Exception as e:
+                error_count += 1
+                print(f"Error: {e}")
+
+            # Rate limiting between teams
+            if i < total:
+                time.sleep(1.0)  # Extra delay between teams
+
+        print(f"\n{'=' * 60}")
+        print(f"Collection complete!")
+        print(f"Collected: {collected_count}, Skipped: {skipped_count}, Errors: {error_count}")
+        print(f"{'=' * 60}")
+
     def collect_player_play_types(self, player_name: str, delay: float = 0.6, force: bool = False) -> bool:
         """
         Collect Synergy play type statistics for a player (incremental).
@@ -1426,6 +1503,181 @@ class NBAStatsCollector:
                 float(pt['ppp']),
                 float(pt['fg_pct']),
                 float(pt['pct_of_total_points']),
+                int(pt['games_played'])
+            ))
+
+        conn.commit()
+        conn.close()
+
+    def collect_team_defensive_play_types(self, team_name: str, delay: float = 0.6, force: bool = False) -> str:
+        """
+        Collect defensive play type stats for a team (how they defend against different play types).
+
+        Args:
+            team_name: Full team name (e.g., "Los Angeles Lakers")
+            delay: Delay in seconds between API calls (default: 0.6)
+            force: If True, re-collect even if data exists (default: False)
+
+        Returns:
+            'collected', 'skipped', or 'error'
+        """
+        # Play types to collect (excluding Misc)
+        PLAY_TYPES = [
+            'Isolation',
+            'Transition',
+            'PRBallHandler',
+            'PRRollman',
+            'Postup',
+            'Spotup',
+            'Handoff',
+            'Cut',
+            'OffScreen',
+            'OffRebound'
+        ]
+
+        # Find team
+        all_teams = teams.get_teams()
+        team = next((t for t in all_teams if t['full_name'] == team_name), None)
+        if not team:
+            print(f"Team '{team_name}' not found")
+            return 'error'
+
+        team_id = team['id']
+
+        # Check if we should skip
+        if not force:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM team_defensive_play_types
+                WHERE team_id = ? AND season = ?
+            """, (team_id, self.SEASON))
+
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            if count > 0:
+                print(f"Skipped (already collected)")
+                return 'skipped'
+
+        print(f"Collecting defensive play type stats for {team_name}...")
+        print(f"Fetching {len(PLAY_TYPES)} play types...\n")
+
+        all_play_types = []
+        games_played = None
+
+        for i, play_type in enumerate(PLAY_TYPES, 1):
+            print(f"  [{i}/{len(PLAY_TYPES)}] {play_type:15}...", end=" ")
+
+            try:
+                # Fetch play type data for teams (defensive)
+                synergy = synergyplaytypes.SynergyPlayTypes(
+                    league_id='00',
+                    season=self.SEASON,
+                    season_type_all_star='Regular Season',
+                    player_or_team_abbreviation='T',  # T for Team
+                    per_mode_simple='PerGame',
+                    play_type_nullable=play_type,
+                    type_grouping_nullable='defensive'  # Defensive stats
+                )
+
+                df = synergy.synergy_play_type.get_data_frame()
+
+                # Find team in results
+                team_data = df[df['TEAM_ID'] == team_id]
+
+                if not team_data.empty:
+                    row = team_data.iloc[0]
+
+                    # Get games played (should be same across all play types)
+                    if games_played is None:
+                        games_played = int(row['GP'])
+
+                    all_play_types.append({
+                        'play_type': play_type,
+                        'poss_pct': float(row['POSS_PCT']),
+                        'possessions': float(row['POSS']),
+                        'poss_per_game': float(row['POSS']) / float(row['GP']) if row['GP'] > 0 else 0.0,
+                        'ppp': float(row['PPP']),
+                        'fg_pct': float(row['FG_PCT']),
+                        'efg_pct': float(row['EFG_PCT']),
+                        'points': float(row['PTS']),
+                        'points_per_game': float(row['PTS']) / float(row['GP']) if row['GP'] > 0 else 0.0,
+                        'games_played': int(row['GP'])
+                    })
+
+                    print(f"✓ {row['PPP']:.3f} PPP allowed")
+                else:
+                    print("○ No data")
+
+            except Exception as e:
+                print(f"✗ Error: {e}")
+                continue
+
+            # Rate limiting
+            if i < len(PLAY_TYPES):
+                time.sleep(delay)
+
+        if not all_play_types:
+            print(f"\nNo defensive play type data found for {team_name}")
+            return 'error'
+
+        # Calculate total points allowed per game from all play types
+        total_ppg = sum(pt['points_per_game'] for pt in all_play_types)
+
+        # Save to database
+        self.save_team_defensive_play_types(team_id, all_play_types)
+
+        print(f"\n Saved defensive play types for {team_name}")
+        print(f"   Total PPG allowed from play types: {total_ppg:.2f}")
+        return 'collected'
+
+    def save_team_defensive_play_types(self, team_id: int, play_types: List[Dict]):
+        """
+        Save team defensive play type stats to database.
+
+        Args:
+            team_id: NBA API team ID
+            play_types: List of defensive play type stat dictionaries
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for pt in play_types:
+            cursor.execute('''
+                INSERT INTO team_defensive_play_types (
+                    team_id, season, play_type,
+                    poss_pct, possessions, poss_per_game,
+                    ppp, fg_pct, efg_pct,
+                    points, points_per_game,
+                    games_played,
+                    last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(team_id, season, play_type) DO UPDATE SET
+                    poss_pct = excluded.poss_pct,
+                    possessions = excluded.possessions,
+                    poss_per_game = excluded.poss_per_game,
+                    ppp = excluded.ppp,
+                    fg_pct = excluded.fg_pct,
+                    efg_pct = excluded.efg_pct,
+                    points = excluded.points,
+                    points_per_game = excluded.points_per_game,
+                    games_played = excluded.games_played,
+                    last_updated = CURRENT_TIMESTAMP
+            ''', (
+                int(team_id),
+                self.SEASON,
+                pt['play_type'],
+                float(pt['poss_pct']),
+                float(pt['possessions']),
+                float(pt['poss_per_game']),
+                float(pt['ppp']),
+                float(pt['fg_pct']),
+                float(pt['efg_pct']),
+                float(pt['points']),
+                float(pt['points_per_game']),
                 int(pt['games_played'])
             ))
 

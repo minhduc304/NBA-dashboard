@@ -38,11 +38,17 @@ python update_stats.py --collect-team-defense --delay 0.6
 # ONLY update play types (incremental, skips player updates)
 python update_stats.py --collect-play-types --delay 1.0
 
-# ONLY update both (skips player updates)
+# ONLY update team defensive play types (all 30 teams, skips player updates)
+python update_stats.py --collect-team-play-types --delay 0.8
+
+# ONLY update both zones (skips player updates)
 python update_stats.py --collect-team-defense --collect-play-types --delay 1.0
 
+# ONLY update both team defenses (zones + play types, skips player updates)
+python update_stats.py --collect-team-defense --collect-team-play-types --delay 0.8
+
 # Update EVERYTHING at once (recommended for daily updates)
-python update_stats.py --collect-assist-zones --collect-team-defense --collect-play-types --delay 1.0
+python update_stats.py --collect-assist-zones --collect-team-defense --collect-team-play-types --collect-play-types --delay 1.0
 
 # Add new active players (including free agents)
 python update_stats.py --include-new
@@ -69,8 +75,9 @@ python update_stats.py --collect-assist-zones --collect-team-defense --delay 2.0
 # Or run collections separately:
 python update_stats.py --delay 1.0                         # Player stats only
 python update_stats.py --collect-assist-zones --delay 1.5  # Assist zones only (heavy, includes player updates)
-python update_stats.py --collect-team-defense --delay 0.6  # Team defense only (30 teams, quick)
-python update_stats.py --collect-play-types --delay 1.0    # Play types only (incremental, skips player updates)
+python update_stats.py --collect-team-defense --delay 0.6  # Team defensive zones only (30 teams, quick)
+python update_stats.py --collect-team-play-types --delay 0.8  # Team defensive play types only (30 teams, ~5-8 min)
+python update_stats.py --collect-play-types --delay 1.0    # Player play types only (incremental, skips player updates)
 ```
 
 ### Verify Data
@@ -85,7 +92,7 @@ python verify_data.py
 - `verify_data.py` - Database verification script
 - `query_play_types.py` - Query and analyze play type statistics
 - `nba_stats.db` - SQLite database (created after first run)
-- `docs/PLAY_TYPES_GUIDE.md` - Complete play types documentation
+
 
 ## Collected Stats
 ### Basic stats
@@ -129,11 +136,82 @@ python verify_data.py
    - Example: Kevin Durant gets 22% from Spot Up, 19% from Isolation
    - Query with: `python query_play_types.py "Player Name"`
 
+5. **Team Defensive Play Types** (10 play types, same as above) - **NEW**
+   - Tracks how teams defend against each play type
+   - Shows **defensive efficiency** by play type (PPP allowed, FG% allowed)
+   - Stores: PPP, FG%, eFG%, Points Per Game, Possessions Per Game, % of Opponent Possessions
+   - Example: Bucks allow 0.807 PPP on PR ball handlers (elite) but 1.375 PPP on PR roll man (poor)
+   - Used for matchup analysis
+
+### Matchup Analysis - 
+6. **Advanced Matchup Analysis** (`matchup_analysis.py`)
+   - Analyzes today's NBA games for player vs. team defense matchups
+   - **Three dimensions**: Shooting zones, Play types, Assist zones
+   - **Enhanced features**:
+     - League-average baselines for context
+     - Team defensive rankings (1-30) for each zone/play type
+     - Minimum sample size filters to avoid small-sample noise
+     - Confidence intervals (Wilson score) to show reliability
+   - **Usage**: `python matchup_analysis.py` or `python matchup_analysis.py --min-advantage 0.10`
+
 **All stats are per-game averages** (except double-doubles, triple-doubles, and assist zones which are totals).
+
+### Collect Team Defensive Play Types
+
+**Command-line (Recommended):**
+```bash
+# Collect for all 30 teams
+python update_stats.py --collect-team-play-types --delay 0.8
+
+# Force re-collection even if data exists
+python update_stats.py --collect-team-play-types --force-team-play-types --delay 0.8
+```
+
+**Python script:**
+```python
+from nba_stats_collector import NBAStatsCollector
+from nba_api.stats.static import teams
+
+collector = NBAStatsCollector()
+
+# Single team
+collector.collect_team_defensive_play_types("Milwaukee Bucks", delay=0.8)
+
+# All teams (required for matchup analysis)
+collector.collect_all_team_defensive_play_types(delay=0.8)
+
+# Or manually:
+all_teams = teams.get_teams()
+for team in all_teams:
+    print(f'Collecting {team["full_name"]}...')
+    collector.collect_team_defensive_play_types(team['full_name'], delay=0.8)
+```
+
+### Run Matchup Analysis
+
+```bash
+# Analyze today's games
+python matchup_analysis.py
+
+# Custom date
+python matchup_analysis.py --date 11/15/2025
+
+# Filter by advantage threshold (only show 10%+ advantages)
+python matchup_analysis.py --min-advantage 0.10
+```
+
+**What it shows:**
+- Player shooting zones vs. opponent defensive zones
+- Player play types vs. opponent defensive play types
+- Player assist zones vs. opponent defensive zones
+- League averages for context
+- Team defensive rankings (1-30)
+- Confidence intervals for reliability
+- Minimum sample size filters
 
 ## Database
 
-SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`, `player_play_types`
+SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`, `player_play_types`, `team_defensive_play_types`
 
 ### Query Examples
 ```python
@@ -239,6 +317,38 @@ conn.close()
 # python query_play_types.py "Kevin Durant"
 # python query_play_types.py --compare "Kevin Durant" "LeBron James"
 # python query_play_types.py --top Isolation --limit 15
+
+# View team defensive play types
+df = pd.read_sql_query("""
+    SELECT
+        play_type,
+        ppp,
+        fg_pct,
+        points_per_game,
+        poss_per_game
+    FROM team_defensive_play_types
+    WHERE team_id = 1610612749  -- Milwaukee Bucks
+      AND season = '2025-26'
+    ORDER BY ppp ASC  -- Best (lowest PPP) to worst
+""", conn)
+print(df)
+conn.close()
+
+# Find worst defenses against a specific play type (exploitable)
+df = pd.read_sql_query("""
+    SELECT
+        team_id,
+        ppp,
+        fg_pct,
+        points_per_game
+    FROM team_defensive_play_types
+    WHERE play_type = 'Isolation'
+      AND season = '2025-26'
+    ORDER BY ppp DESC  -- Highest PPP = worst defense
+    LIMIT 10
+""", conn)
+print(df)
+conn.close()
 ```
 
 

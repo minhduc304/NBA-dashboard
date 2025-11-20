@@ -20,8 +20,14 @@ Usage:
     # ONLY update play types (incremental, skips player updates)
     python update_stats.py --collect-play-types
 
+    # ONLY update team defensive play types (all 30 teams, skips player updates)
+    python update_stats.py --collect-team-play-types
+
     # ONLY update both zones (skips player updates)
     python update_stats.py --collect-team-defense --collect-play-types
+
+    # ONLY update both team defenses (zones + play types, skips player updates)
+    python update_stats.py --collect-team-defense --collect-team-play-types
 
     # Force play types re-collection (even if no new games)
     python update_stats.py --collect-play-types --force-play-types
@@ -59,8 +65,12 @@ def main():
                        help='Also collect team defensive zones (all 30 teams)')
     parser.add_argument('--collect-play-types', action='store_true',
                        help='Also collect play type stats (10 Synergy play types per player)')
+    parser.add_argument('--collect-team-play-types', action='store_true',
+                       help='Also collect team defensive play types (all 30 teams, how teams defend each play type)')
     parser.add_argument('--force-play-types', action='store_true',
                        help='Force play types collection even if no new games (ignores incremental check)')
+    parser.add_argument('--force-team-play-types', action='store_true',
+                       help='Force team defensive play types re-collection (even if data exists)')
     parser.add_argument('--delay', type=float, default=1.0,
                        help='Delay in seconds between API calls (default: 1.0, increase to 2.0+ if rate limited)')
     parser.add_argument('--rostered-only', action='store_true',
@@ -102,7 +112,7 @@ def main():
         # Check if we should update players or just collect team defense/play types
         # Skip player updates if we're ONLY collecting team defense and/or play types
         only_collecting_zones = (
-            (args.collect_team_defense or args.collect_play_types) and
+            (args.collect_team_defense or args.collect_play_types or args.collect_team_play_types) and
             not args.collect_assist_zones and
             not args.include_new and
             not args.add_new_only
@@ -200,6 +210,17 @@ def main():
             print(f"Using {args.delay}s delay between API calls\n")
 
             collector.collect_all_team_defenses(delay=args.delay)
+
+        # Collect team defensive play types if requested
+        if args.collect_team_play_types:
+            print("\n" + "=" * 60)
+            print("TEAM DEFENSIVE PLAY TYPES COLLECTION")
+            print("=" * 60)
+            print("Collecting defensive play types for all 30 NBA teams...")
+            print("(Shows how teams defend against each Synergy play type)")
+            print(f"Using {args.delay}s delay between play types\n")
+
+            collector.collect_all_team_defensive_play_types(delay=args.delay, force=args.force_team_play_types)
 
         # Collect play types for all players if requested
         if args.collect_play_types:
