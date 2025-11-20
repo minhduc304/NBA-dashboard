@@ -1092,8 +1092,6 @@ class NBAStatsCollector:
                 games_analyzed
             ))
 
-        # CRITICAL FIX: Update metadata for ALL existing zones, even those without new assists
-        # This ensures consistent last_game_id across all zones for incremental updates
         cursor.execute('''
             UPDATE player_assist_zones
             SET last_game_id = ?,
@@ -1334,19 +1332,21 @@ class NBAStatsCollector:
 
                 conn.close()
 
-                # If we have real play type data (not NO_DATA marker), skip
-                if stored_play_type != 'NO_DATA':
-                    print(f"Skipped (already collected)")
-                    return 'skipped'
-
-                # If we have NO_DATA marker but games_played hasn't increased, skip
-                if stored_play_type == 'NO_DATA' and current_gp <= stored_gp:
-                    print(f"Skipped (hasn't qualified, GP: {current_gp})")
-                    return 'skipped'
-
-                # If games_played increased, re-check (might qualify now)
-                if stored_play_type == 'NO_DATA' and current_gp > stored_gp:
-                    print(f"Re-checking (GP increased: {stored_gp} → {current_gp}, might qualify now)")
+                # INCREMENTAL UPDATE: Check if games_played increased
+                if stored_play_type == 'NO_DATA':
+                    # Player didn't qualify before
+                    if current_gp <= stored_gp:
+                        print(f"Skipped (hasn't qualified, GP: {current_gp})")
+                        return 'skipped'
+                    else:
+                        print(f"Re-checking (GP increased: {stored_gp} → {current_gp}, might qualify now)")
+                else:
+                    # Player has real data - check if they played new games
+                    if current_gp <= stored_gp:
+                        print(f"Skipped (no new games, GP: {current_gp})")
+                        return 'skipped'
+                    else:
+                        print(f"Updating (GP increased: {stored_gp} → {current_gp})")
             else:
                 conn.close()
 

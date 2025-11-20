@@ -134,7 +134,6 @@ python verify_data.py
    - Shows **scoring breakdown** by play type (what % of points come from each play type)
    - Stores: Points, PPG, Possessions, Poss/G, PPP, FG%, % of Total Points
    - Example: Kevin Durant gets 22% from Spot Up, 19% from Isolation
-   - Query with: `python query_play_types.py "Player Name"`
 
 5. **Team Defensive Play Types** (10 play types, same as above) - **NEW**
    - Tracks how teams defend against each play type
