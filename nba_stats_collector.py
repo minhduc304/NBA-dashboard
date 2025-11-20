@@ -1442,9 +1442,25 @@ class NBAStatsCollector:
         # Calculate totals and percentages
         total_ppg = sum(pt['points_per_game'] for pt in all_play_types)
 
+        # Get current games_played from player_stats (source of truth)
+        # This ensures consistency even if play type API data lags behind
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT games_played
+            FROM player_stats
+            WHERE player_id = ? AND season = ?
+        """, (player_id, self.SEASON))
+        result = cursor.fetchone()
+        conn.close()
+
+        current_gp = int(result[0]) if result and result[0] is not None else games_played
+
         for pt in all_play_types:
-            pt['points'] = pt['points_per_game'] * pt['games_played']
-            pt['possessions'] = pt['poss_per_game'] * pt['games_played']
+            # Use current GP from player_stats as source of truth
+            pt['games_played'] = current_gp
+            pt['points'] = pt['points_per_game'] * current_gp
+            pt['possessions'] = pt['poss_per_game'] * current_gp
             pt['pct_of_total_points'] = (pt['points_per_game'] / total_ppg * 100) if total_ppg > 0 else 0
 
         # Save to database

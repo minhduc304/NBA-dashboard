@@ -36,6 +36,10 @@ python update_stats.py --collect-assist-zones --delay 0.6
 python update_stats.py --collect-team-defense --delay 0.6
 
 # ONLY update play types (incremental, skips player updates)
+# Since play type collection uses a different from the NBA, sometimes its data lags behind. 
+# So only run this after regular stats have been updated to make sure the Games Played count is up to date.
+python update_stats.py --collect-play-types
+
 python update_stats.py --collect-play-types --delay 1.0
 
 # ONLY update team defensive play types (all 30 teams, skips player updates)

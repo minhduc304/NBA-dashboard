@@ -18,6 +18,8 @@ Usage:
     python update_stats.py --collect-team-defense
 
     # ONLY update play types (incremental, skips player updates)
+    # Since play type collection uses a different from the NBA, sometimes its data lags behind. 
+    # So only run this after regular stats have been updated to make sure the Games Played count is up to date.
     python update_stats.py --collect-play-types
 
     # ONLY update team defensive play types (all 30 teams, skips player updates)
@@ -28,9 +30,6 @@ Usage:
 
     # ONLY update both team defenses (zones + play types, skips player updates)
     python update_stats.py --collect-team-defense --collect-team-play-types
-
-    # Force play types re-collection (even if no new games)
-    python update_stats.py --collect-play-types --force-play-types
 
     # Update everything together
     python update_stats.py --collect-assist-zones --collect-team-defense --collect-play-types
