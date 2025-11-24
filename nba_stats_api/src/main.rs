@@ -3,20 +3,6 @@ use axum::{routing::get, Router};
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// TODO: Your main entry point goes here
-//
-// Learning objectives for this file:
-// 1. Understand #[tokio::main] attribute
-// 2. Learn how to set up Axum Router
-// 3. Practice creating HTTP server with axum::Server
-// 4. Learn about connection pooling with SQLx
-//
-// Hints:
-// - You'll need to create a database connection pool
-// - Pass the pool as shared state to your routes
-// - Set up your Router with routes from other modules
-// - Start the server listening on a port
-
 #[tokio::main]
 async fn main() {
     // Initialize tracing/logging
