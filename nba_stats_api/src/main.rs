@@ -1,7 +1,14 @@
 use sqlx::sqlite::SqlitePool;
 use axum::{routing::get, Router};
 use std::net::{Ipv4Addr, SocketAddr};
+use tower_http::cors::{CorsLayer, Any};
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+mod routes;
+mod models;
+mod db;
+mod error;
 
 #[tokio::main]
 async fn main() {
@@ -39,10 +46,32 @@ async fn main() {
         .expect("PORT is not the correct format");
 
     let addr = SocketAddr::from((host, port));
-    
+
+    // CORS configuration for NextJS frontend
+    let cors = CorsLayer::new()
+        .allow_origin(Any)  // In production, use specific origins
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
-        .route("/", get(|| async { "Hello, World!" }))
-        .route("/health", get(health_check))
+        // Root and health
+        .route("/", get(|| async { "NBA Stats API - v1.0" }))
+        .route("/health", get(routes::health::health_check))
+
+        // Player endpoints
+        .route("/api/players", get(routes::players::get_players))
+        .route("/api/players/{id}", get(routes::players::get_player_by_id))
+        .route("/api/players/search", get(routes::players::search_players))
+        .route("/api/players/{id}/shooting-zones", get(routes::players::get_player_shooting_zones))
+        .route("/api/players/{id}/assist-zones", get(routes::players::get_player_assist_zones))
+        .route("/api/players/{id}/play-types", get(routes::players::get_player_play_types))
+
+        // Team defensive endpoints
+        .route("/api/teams/{id}/defensive-zones", get(routes::zones::get_team_defensive_zones))
+        .route("/api/teams/{id}/defensive-play-types", get(routes::play_types::get_team_defensive_play_types))
+
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
         .with_state(pool);
 
     let listener= tokio::net::TcpListener::bind(addr)
@@ -54,9 +83,4 @@ async fn main() {
     axum::serve(listener, app)
     .await
     .expect("Failed to start server.");
-}
-
-// Health check handler
-async fn health_check() -> &'static str{
-    "200 OK"
 }
