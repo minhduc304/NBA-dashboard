@@ -32,6 +32,9 @@ python update_stats.py --player "Devin Booker"
 # Update with assist zones (incremental, only processes new games)
 python update_stats.py --collect-assist-zones --delay 0.6
 
+# ONLY collect game logs (single API call, incremental)
+python update_stats.py --collect-game-logs
+
 # ONLY update team defensive zones (all 30 teams, skips player updates)
 python update_stats.py --collect-team-defense --delay 0.6
 
@@ -146,8 +149,16 @@ python verify_data.py
    - Example: Bucks allow 0.807 PPP on PR ball handlers (elite) but 1.375 PPP on PR roll man (poor)
    - Used for matchup analysis
 
-### Matchup Analysis - 
-6. **Advanced Matchup Analysis** (`matchup_analysis.py`)
+### Game Logs
+6. **Player Game Logs** (`player_game_logs` table)
+   - Individual game stats for every player
+   - Stores: game_id, player_id, team_id, season, game_date, matchup, min, pts, reb, ast, stl, blk, tov
+   - Shooting splits: FGM/FGA/FG%, FG3M/FG3A/FG3%, FTM/FTA/FT%
+   - Single API call to collect all players
+   - Incremental updates (skips already-collected games)
+
+### Matchup Analysis
+7. **Advanced Matchup Analysis** (`matchup_analysis.py`)
    - Analyzes today's NBA games for player vs. team defense matchups
    - **Three dimensions**: Shooting zones, Play types, Assist zones
    - **Enhanced features**:
@@ -214,7 +225,7 @@ python matchup_analysis.py --min-advantage 0.10
 
 ## Database
 
-SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`, `player_play_types`, `team_defensive_play_types`
+SQLite database with tables: `player_stats`, `player_shooting_zones`, `team_defensive_zones`, `player_assist_zones`, `player_play_types`, `team_defensive_play_types`, `player_game_logs`, `teams`, `schedule`
 
 ### Query Examples
 ```python
@@ -349,6 +360,39 @@ df = pd.read_sql_query("""
       AND season = '2025-26'
     ORDER BY ppp DESC  -- Highest PPP = worst defense
     LIMIT 10
+""", conn)
+print(df)
+conn.close()
+
+# View player game logs
+df = pd.read_sql_query("""
+    SELECT
+        game_date,
+        matchup,
+        pts,
+        reb,
+        ast,
+        fg_pct,
+        fg3_pct
+    FROM player_game_logs
+    WHERE player_id = 201142  -- Kevin Durant
+    ORDER BY game_date DESC
+    LIMIT 10
+""", conn)
+print(df)
+conn.close()
+
+# Compare player performance in home vs away games
+df = pd.read_sql_query("""
+    SELECT
+        CASE WHEN matchup LIKE '%vs.%' THEN 'Home' ELSE 'Away' END as location,
+        ROUND(AVG(pts), 1) as avg_pts,
+        ROUND(AVG(reb), 1) as avg_reb,
+        ROUND(AVG(ast), 1) as avg_ast,
+        COUNT(*) as games
+    FROM player_game_logs
+    WHERE player_id = 201142  -- Kevin Durant
+    GROUP BY location
 """, conn)
 print(df)
 conn.close()

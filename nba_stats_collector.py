@@ -12,7 +12,8 @@ from nba_api.stats.endpoints import (
     playerdashboardbyshootingsplits,
     teamdashboardbyshootingsplits,
     commonteamroster,
-    synergyplaytypes
+    synergyplaytypes,
+    playergamelogs
 )
 import time
 from requests.exceptions import ReadTimeout, ConnectionError
@@ -40,174 +41,9 @@ class NBAStatsCollector:
         self._rostered_player_ids = None  # Cache for rostered players
 
     def _init_database(self):
-        """Create the database schema."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS player_stats (
-                player_id INTEGER PRIMARY KEY,
-                player_name TEXT NOT NULL,
-                season TEXT NOT NULL,
-
-                -- Basic stats (per-game averages)
-                points REAL,
-                assists REAL,
-                rebounds REAL,
-                threes_made REAL,
-                steals REAL,
-                blocks REAL,
-                turnovers REAL,
-                fouls REAL,
-                ft_attempted REAL,
-
-                -- Combo stats (calculated per-game averages)
-                pts_plus_ast REAL,
-                pts_plus_reb REAL,
-                ast_plus_reb REAL,
-                pts_plus_ast_plus_reb REAL,
-                steals_plus_blocks REAL,
-
-                -- Achievements (totals)
-                double_doubles INTEGER,
-                triple_doubles INTEGER,
-
-                -- Quarter/Half stats (per-game averages)
-                q1_points REAL,
-                q1_assists REAL,
-                q1_rebounds REAL,
-                first_half_points REAL,
-
-                -- Metadata
-                games_played INTEGER,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Player assist zones table (where a player's assist lead to baskets)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS player_assist_zones (
-                player_id INTEGER NOT NULL,
-                season TEXT NOT NULL,
-                zone_name TEXT NOT NULL,
-
-                -- Assist stats by zone (totals, will convert to per-game when querying)
-                assists INTEGER DEFAULT 0,
-                ast_fgm INTEGER DEFAULT 0,
-                ast_fga INTEGER DEFAULT 0,
-
-                -- Embedded metadata (no separate table needed)
-                last_game_id TEXT,
-                last_game_date TEXT,
-                games_analyzed INTEGER DEFAULT 0,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                PRIMARY KEY (player_id, season, zone_name),
-                FOREIGN KEY (player_id) REFERENCES player_stats(player_id)
-            )
-        ''')
-
-        # Player shooting zones table (6 zones, excluding Backcourt)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS player_shooting_zones (
-                player_id INTEGER NOT NULL,
-                season TEXT NOT NULL,
-                zone_name TEXT NOT NULL,
-
-                -- Core shooting stats (per-game averages)
-                fgm REAL,
-                fga REAL,
-                fg_pct REAL,
-                efg_pct REAL,
-
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                PRIMARY KEY (player_id, season, zone_name),
-                FOREIGN KEY (player_id) REFERENCES player_stats(player_id)
-            )
-        ''')
-
-        # Team defensive zones table (opponent shooting by zone)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS team_defensive_zones (
-                team_id INTEGER NOT NULL,
-                season TEXT NOT NULL,
-                zone_name TEXT NOT NULL,
-
-                -- Opponent shooting stats (per-game averages)
-                opp_fgm REAL,
-                opp_fga REAL,
-                opp_fg_pct REAL,
-                opp_efg_pct REAL,
-
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                PRIMARY KEY (team_id, season, zone_name)
-            )
-        ''')
-
-        # Player play types table (Synergy play type statistics)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS player_play_types (
-                player_id INTEGER NOT NULL,
-                season TEXT NOT NULL,
-                play_type TEXT NOT NULL,
-
-                -- Scoring stats
-                points REAL,
-                points_per_game REAL,
-
-                -- Possession stats
-                possessions REAL,
-                poss_per_game REAL,
-
-                -- Efficiency stats
-                ppp REAL,
-                fg_pct REAL,
-
-                -- Breakdown
-                pct_of_total_points REAL,
-
-                -- Metadata
-                games_played INTEGER,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                PRIMARY KEY (player_id, season, play_type),
-                FOREIGN KEY (player_id) REFERENCES player_stats(player_id)
-            )
-        ''')
-
-        # Team defensive play types table (how teams defend against different play types)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS team_defensive_play_types (
-                team_id INTEGER NOT NULL,
-                season TEXT NOT NULL,
-                play_type TEXT NOT NULL,
-
-                -- Possession stats (what opponents do against this team)
-                poss_pct REAL,           -- % of opponent possessions using this play type
-                possessions REAL,        -- Total possessions faced
-                poss_per_game REAL,      -- Possessions per game
-
-                -- Efficiency stats (opponent efficiency against this defense)
-                ppp REAL,                -- Points per possession allowed
-                fg_pct REAL,             -- FG% allowed
-                efg_pct REAL,            -- eFG% allowed
-
-                -- Scoring stats
-                points REAL,             -- Total points allowed
-                points_per_game REAL,    -- PPG allowed from this play type
-
-                -- Metadata
-                games_played INTEGER,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                PRIMARY KEY (team_id, season, play_type)
-            )
-        ''')
-
-        conn.commit()
-        conn.close()
+        """Initialize the database schema using init_db module."""
+        from init_db import init_database
+        init_database(self.db_path)
 
     def get_rostered_player_ids(self) -> Set[int]:
         """
@@ -303,6 +139,7 @@ class NBAStatsCollector:
                 'player_id': player_id,
                 'player_name': player_full_name,
                 'season': self.SEASON,
+                'team_id': overall_stats.get('TEAM_ID'),
 
                 # Basic stats
                 'points': overall_stats.get('PTS'),
@@ -960,14 +797,14 @@ class NBAStatsCollector:
 
         cursor.execute('''
             INSERT OR REPLACE INTO player_stats (
-                player_id, player_name, season,
+                player_id, player_name, season, team_id,
                 points, assists, rebounds, threes_made, steals, blocks, turnovers, fouls, ft_attempted,
                 pts_plus_ast, pts_plus_reb, ast_plus_reb, pts_plus_ast_plus_reb, steals_plus_blocks,
                 double_doubles, triple_doubles,
                 q1_points, q1_assists, q1_rebounds, first_half_points,
                 games_played, last_updated
             ) VALUES (
-                :player_id, :player_name, :season,
+                :player_id, :player_name, :season, :team_id,
                 :points, :assists, :rebounds, :threes_made, :steals, :blocks, :turnovers, :fouls, :ft_attempted,
                 :pts_plus_ast, :pts_plus_reb, :ast_plus_reb, :pts_plus_ast_plus_reb, :steals_plus_blocks,
                 :double_doubles, :triple_doubles,
@@ -2341,6 +2178,152 @@ class NBAStatsCollector:
         print(f"Collection complete!")
         print(f"Success: {success_count}, No data: {no_data_count}, Errors: {error_count}")
         print(f"{'=' * 60}")
+
+    def collect_all_game_logs(self) -> Dict[str, int]:
+        """
+        Collect game logs for all players in the current season.
+
+        Makes a single API call to fetch all player game logs, then saves
+        them to the database. Uses INSERT OR IGNORE to skip already-collected
+        games, making this safe to run incrementally.
+
+        Returns:
+            Dict with 'inserted' (new rows) and 'skipped' (existing rows) counts
+        """
+        print(f"Fetching all player game logs for {self.SEASON} season...")
+
+        # Columns to collect (matching player_game_logs table schema)
+        COLUMNS = [
+            "SEASON_YEAR",
+            "PLAYER_ID",
+            "TEAM_ID",
+            "GAME_ID",
+            "GAME_DATE",
+            "MATCHUP",
+            "MIN",
+            "PTS",
+            "REB",
+            "AST",
+            "STL",
+            "BLK",
+            "FGM", "FGA", "FG_PCT",
+            "FG3M", "FG3A", "FG3_PCT",
+            "FTM", "FTA", "FT_PCT",
+            "TOV",
+        ]
+
+        try:
+            # Single API call to get all player game logs
+            response = playergamelogs.PlayerGameLogs(
+                season_nullable=self.SEASON,
+                season_type_nullable="Regular Season",
+                timeout=60
+            )
+            df = response.get_data_frames()[0]
+
+            if df.empty:
+                print("No game logs found.")
+                return {'inserted': 0, 'skipped': 0}
+
+            print(f"Fetched {len(df)} game log entries from API.")
+
+            # Filter to only the columns we need
+            available_cols = [col for col in COLUMNS if col in df.columns]
+            df = df[available_cols].copy()
+
+            # Rename columns to match database schema (lowercase)
+            column_mapping = {
+                'SEASON_YEAR': 'season',
+                'PLAYER_ID': 'player_id',
+                'TEAM_ID': 'team_id',
+                'GAME_ID': 'game_id',
+                'GAME_DATE': 'game_date',
+                'MATCHUP': 'matchup',
+                'MIN': 'min',
+                'PTS': 'pts',
+                'REB': 'reb',
+                'AST': 'ast',
+                'STL': 'stl',
+                'BLK': 'blk',
+                'FGM': 'fgm',
+                'FGA': 'fga',
+                'FG_PCT': 'fg_pct',
+                'FG3M': 'fg3m',
+                'FG3A': 'fg3a',
+                'FG3_PCT': 'fg3_pct',
+                'FTM': 'ftm',
+                'FTA': 'fta',
+                'FT_PCT': 'ft_pct',
+                'TOV': 'tov',
+            }
+            df = df.rename(columns=column_mapping)
+
+            # Save to database
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get count before insert
+            cursor.execute("SELECT COUNT(*) FROM player_game_logs")
+            count_before = cursor.fetchone()[0]
+
+            # Insert with OR IGNORE to skip duplicates (based on game_id, player_id PK)
+            insert_sql = '''
+                INSERT OR IGNORE INTO player_game_logs (
+                    game_id, player_id, team_id, season, game_date, matchup,
+                    min, pts, reb, ast, stl, blk,
+                    fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
+                    ftm, fta, ft_pct, tov
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+
+            for _, row in df.iterrows():
+                cursor.execute(insert_sql, (
+                    row['game_id'],
+                    row['player_id'],
+                    row['team_id'],
+                    row['season'],
+                    row['game_date'],
+                    row['matchup'],
+                    row['min'],
+                    row['pts'],
+                    row['reb'],
+                    row['ast'],
+                    row['stl'],
+                    row['blk'],
+                    row['fgm'],
+                    row['fga'],
+                    row['fg_pct'],
+                    row['fg3m'],
+                    row['fg3a'],
+                    row['fg3_pct'],
+                    row['ftm'],
+                    row['fta'],
+                    row['ft_pct'],
+                    row['tov'],
+                ))
+
+            conn.commit()
+
+            # Get count after insert
+            cursor.execute("SELECT COUNT(*) FROM player_game_logs")
+            count_after = cursor.fetchone()[0]
+
+            conn.close()
+
+            inserted = count_after - count_before
+            skipped = len(df) - inserted
+
+            print(f"\n{'=' * 60}")
+            print(f"Game logs collection complete!")
+            print(f"Inserted: {inserted} new rows, Skipped: {skipped} existing rows")
+            print(f"Total in database: {count_after}")
+            print(f"{'=' * 60}")
+
+            return {'inserted': inserted, 'skipped': skipped}
+
+        except Exception as e:
+            print(f"Error collecting game logs: {e}")
+            return {'inserted': 0, 'skipped': 0}
 
 
 if __name__ == "__main__":

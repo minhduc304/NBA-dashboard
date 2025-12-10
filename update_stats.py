@@ -11,6 +11,9 @@ Usage:
     # Update specific player
     python update_stats.py --player "Name"
 
+    # ONLY collect game logs (single API call, incremental)
+    python update_stats.py --collect-game-logs
+
     # Update with assist zones (incremental, only processes new games)
     python update_stats.py --collect-assist-zones
 
@@ -58,6 +61,8 @@ def main():
                        help='Also add new active players not in database')
     parser.add_argument('--add-new-only', action='store_true',
                        help='ONLY add new players (skip ALL existing players, most efficient for resuming)')
+    parser.add_argument('--collect-game-logs', action='store_true',
+                       help='Collect all player game logs (single API call, incremental)')
     parser.add_argument('--collect-assist-zones', action='store_true',
                        help='Also collect assist zones (incremental, only processes new games)')
     parser.add_argument('--collect-team-defense', action='store_true',
@@ -108,20 +113,20 @@ def main():
         # Team defense is league-wide, not player-specific
 
     else:
-        # Check if we should update players or just collect team defense/play types
-        # Skip player updates if we're ONLY collecting team defense and/or play types
-        only_collecting_zones = (
-            (args.collect_team_defense or args.collect_play_types or args.collect_team_play_types) and
+        # Check if we should update players or just collect specific data types
+        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types)
+        only_collecting_specific = (
+            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types) and
             not args.collect_assist_zones and
             not args.include_new and
             not args.add_new_only
         )
-        update_players = not only_collecting_zones
+        update_players = not only_collecting_specific
 
         if update_players:
             # Update all players
             print("=" * 60)
-            print("UPDATE MODE: Efficient update for players with new games")
+            print("Update for players with new games")
             print("=" * 60)
             print(f"Using {args.delay}s delay between API calls")
             if args.rostered_only:
@@ -140,6 +145,16 @@ def main():
                 print("(Use --include-new to also add new active players)")
                 print()
                 collector.update_all_players(delay=args.delay, only_existing=True)
+
+        # Collect game logs if requested
+        if args.collect_game_logs:
+            print("\n" + "=" * 60)
+            print("GAME LOGS COLLECTION")
+            print("=" * 60)
+            print("Collecting all player game logs (single API call)...")
+            print("(Incremental: skips already-collected games)\n")
+
+            collector.collect_all_game_logs()
 
         # Collect assist zones for all players if requested
         if args.collect_assist_zones:
