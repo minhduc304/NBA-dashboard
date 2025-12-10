@@ -280,7 +280,16 @@ def sync_games_to_db(games: List[Dict], db_path: str = DB_PATH) -> int:
     cursor = conn.cursor()
 
     synced = 0
+    skipped = 0
     for game in games:
+        # Skip games with undetermined teams (e.g., NBA Cup games or playoff games)
+        home_team_id = game['homeTeam'].get('id')
+        away_team_id = game['awayTeam'].get('id')
+
+        if home_team_id is None or away_team_id is None:
+            skipped += 1
+            continue
+
         try:
             cursor.execute("""
                 INSERT INTO schedule (
@@ -298,11 +307,11 @@ def sync_games_to_db(games: List[Dict], db_path: str = DB_PATH) -> int:
                 game['gameDate'],
                 game['gameTime'],
                 game['gameStatus'],
-                game['homeTeam']['id'],
+                home_team_id,
                 game['homeTeam']['name'],
                 game['homeTeam']['abbreviation'],
                 game['homeTeam']['city'],
-                game['awayTeam']['id'],
+                away_team_id,
                 game['awayTeam']['name'],
                 game['awayTeam']['abbreviation'],
                 game['awayTeam']['city'],
@@ -312,12 +321,83 @@ def sync_games_to_db(games: List[Dict], db_path: str = DB_PATH) -> int:
         except Exception as e:
             print(f"Error syncing game {game.get('gameId', 'unknown')}: {e}")
 
+    if skipped > 0:
+        print(f"Skipped {skipped} games with undetermined teams (e.g., NBA Cup)")
+
     conn.commit()
     conn.close()
     return synced
 
 
-def sync_schedule(days_ahead: int = 7, days_back: int = 1, db_path: str = DB_PATH) -> Dict:
+def get_full_season_schedule(season: str = '2025-26') -> List[Dict]:
+    """
+    Fetch entire season schedule.
+
+    Args:
+        season: NBA season (e.g., '2025-26').
+
+    Returns:
+        List of game dictionaries.
+    """
+    try:
+        # Fetch all games for the season (one API call)
+        game_finder = leaguegamefinder.LeagueGameFinder(
+            season_nullable=season,
+            league_id_nullable='00',
+            season_type_nullable='Regular Season'
+        )
+        time.sleep(0.6)
+
+        games_data = game_finder.get_normalized_dict()
+        games_list = games_data.get('LeagueGameFinderResults', [])
+
+        if not games_list:
+            return []
+
+        # Group by game_id to get both teams
+        team_info = get_team_info()
+        games_by_id = {}
+
+        for game in games_list:
+            game_id = game.get('GAME_ID', '')
+            matchup = game.get('MATCHUP', '')
+            team_id = game.get('TEAM_ID')
+            game_date = game.get('GAME_DATE', '')
+
+            if game_id not in games_by_id:
+                games_by_id[game_id] = {
+                    'gameId': game_id,
+                    'gameDate': game_date,
+                    'gameTime': '',
+                    'gameStatus': 'Scheduled',
+                    'homeTeam': {'id': None, 'name': '', 'abbreviation': '', 'city': ''},
+                    'awayTeam': {'id': None, 'name': '', 'abbreviation': '', 'city': ''}
+                }
+
+            team = team_info.get(team_id, {})
+            team_data = {
+                'id': team_id,
+                'name': team.get('full_name', ''),
+                'abbreviation': team.get('abbreviation', ''),
+                'city': team.get('city', '')
+            }
+
+            # Determine home/away from matchup string
+            is_home = 'vs.' in matchup
+
+            if is_home:
+                games_by_id[game_id]['homeTeam'] = team_data
+            else:
+                games_by_id[game_id]['awayTeam'] = team_data
+
+        return list(games_by_id.values())
+
+    except Exception as e:
+        print(f"Error fetching full season schedule: {e}")
+        return []
+
+
+def sync_schedule(days_ahead: int = 7, days_back: int = 1, db_path: str = DB_PATH, full_season: bool = False) -> Dict:
     """
     Fetch and sync schedule data to SQLite.
 
@@ -325,6 +405,7 @@ def sync_schedule(days_ahead: int = 7, days_back: int = 1, db_path: str = DB_PAT
         days_ahead: Number of days to fetch ahead from today.
         days_back: Number of days to fetch back from today.
         db_path: Path to SQLite database.
+        full_season: If True, fetch until no more games are found (ignores days_ahead).
 
     Returns:
         Summary of sync operation.
@@ -349,12 +430,18 @@ def sync_schedule(days_ahead: int = 7, days_back: int = 1, db_path: str = DB_PAT
     print(f"Fetched {len(today_games)} games for {today_str} (today)")
 
     # Fetch upcoming games
-    for i in range(1, days_ahead + 1):
-        date = (today + timedelta(days=i)).strftime('%Y-%m-%d')
-        games = get_games_by_date(date)
-        all_games.extend(games)
-        dates_processed.append(date)
-        print(f"Fetched {len(games)} games for {date} (upcoming)")
+    if full_season:
+        print("Fetching full season schedule...")
+        season_games = get_full_season_schedule()
+        all_games.extend(season_games)
+        print(f"Fetched {len(season_games)} games for the season")
+    else:
+        for i in range(1, days_ahead + 1):
+            date = (today + timedelta(days=i)).strftime('%Y-%m-%d')
+            games = get_games_by_date(date)
+            all_games.extend(games)
+            dates_processed.append(date)
+            print(f"Fetched {len(games)} games for {date} (upcoming)")
 
     # Sync to database
     synced = sync_games_to_db(all_games, db_path)
@@ -375,6 +462,7 @@ def main():
     parser.add_argument('--upcoming', type=int, default=0, help='Get upcoming games for N days')
     parser.add_argument('--output', type=str, default='json', choices=['json', 'pretty'], help='Output format')
     parser.add_argument('--sync', action='store_true', help='Sync schedule data to SQLite database')
+    parser.add_argument('--full-season', action='store_true', help='Fetch entire season (until no more games found)')
     parser.add_argument('--sync-days-ahead', type=int, default=7, help='Days ahead to sync (default: 7)')
     parser.add_argument('--sync-days-back', type=int, default=1, help='Days back to sync (default: 1)')
     parser.add_argument('--db-path', type=str, default=DB_PATH, help='Path to SQLite database')
@@ -384,7 +472,10 @@ def main():
     # Sync mode: fetch and store in SQLite
     if args.sync:
         print(f"Starting schedule sync...")
-        print(f"  Days ahead: {args.sync_days_ahead}")
+        if args.full_season:
+            print(f"  Mode: Full season (fetch until no more games)")
+        else:
+            print(f"  Days ahead: {args.sync_days_ahead}")
         print(f"  Days back: {args.sync_days_back}")
         print(f"  Database: {args.db_path}")
         print()
@@ -392,7 +483,8 @@ def main():
         result = sync_schedule(
             days_ahead=args.sync_days_ahead,
             days_back=args.sync_days_back,
-            db_path=args.db_path
+            db_path=args.db_path,
+            full_season=args.full_season
         )
 
         print()
