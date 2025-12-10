@@ -21,6 +21,7 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
         - player_assist_zones: Where assists lead to makes
         - player_play_types: Synergy play type efficiency (10 types)
         - player_game_logs: Individual game logs per player
+        - player_injuries: Daily injury status for players
         - team_defensive_zones: Opponent shooting by zone
         - team_defensive_play_types: Defensive play type efficiency
         - teams: NBA team information
@@ -41,6 +42,7 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
             player_name TEXT NOT NULL,
             season TEXT NOT NULL,
             team_id INTEGER,
+            position TEXT,
 
             -- Basic stats (per-game averages)
             points REAL,
@@ -291,6 +293,27 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule(game_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_home_team ON schedule(home_team_abbreviation)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_away_team ON schedule(away_team_abbreviation)')
+
+    # =========================================================================
+    # PLAYER INJURIES TABLE (daily injury status)
+    # =========================================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS player_injuries (
+            player_id INTEGER NOT NULL,
+            player_name TEXT NOT NULL,
+            team_id INTEGER,
+            injury_status TEXT NOT NULL,
+            injury_description TEXT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (player_id),
+            FOREIGN KEY (player_id) REFERENCES player_stats(player_id),
+            FOREIGN KEY (team_id) REFERENCES teams(team_id)
+        )
+    ''')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_injuries_team ON player_injuries(team_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_injuries_status ON player_injuries(injury_status)')
 
     conn.commit()
     conn.close()

@@ -79,6 +79,8 @@ def main():
                        help='Delay in seconds between API calls (default: 1.0, increase to 2.0+ if rate limited)')
     parser.add_argument('--rostered-only', action='store_true',
                        help='Only collect rostered players (excludes ~45 free agents, saves API calls)')
+    parser.add_argument('--collect-positions', action='store_true',
+                       help='Collect position data for all players from team rosters (30 API calls)')
 
     args = parser.parse_args()
 
@@ -114,9 +116,9 @@ def main():
 
     else:
         # Check if we should update players or just collect specific data types
-        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types)
+        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types, positions)
         only_collecting_specific = (
-            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types) and
+            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types or args.collect_positions) and
             not args.collect_assist_zones and
             not args.include_new and
             not args.add_new_only
@@ -283,6 +285,16 @@ def main():
             print(f"Play types collection complete!")
             print(f"Collected: {collected_count}, Skipped: {skipped_count}, Errors: {error_count}")
             print(f"{'=' * 60}")
+
+        # Collect player positions if requested
+        if args.collect_positions:
+            print("\n" + "=" * 60)
+            print("PLAYER POSITIONS COLLECTION")
+            print("=" * 60)
+            print("Collecting positions from all 30 NBA team rosters...")
+            print(f"Using {args.delay}s delay between API calls\n")
+
+            collector.collect_all_player_positions(delay=args.delay)
 
 
 if __name__ == "__main__":

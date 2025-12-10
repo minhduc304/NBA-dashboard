@@ -94,6 +94,79 @@ class NBAStatsCollector:
         self._rostered_player_ids = rostered_players
         return rostered_players
 
+    def collect_all_player_positions(self, delay: float = 0.6) -> Dict[str, int]:
+        """
+        Collect position data for all rostered players from team rosters.
+
+        Args:
+            delay: Seconds to wait between API calls (default: 0.6)
+
+        Returns:
+            Dict with counts: {'updated': X, 'skipped': Y, 'errors': Z}
+        """
+        all_teams = teams.get_teams()
+        updated_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        print(f"Collecting positions for players from {len(all_teams)} teams...")
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for i, team in enumerate(all_teams, 1):
+            team_id = team['id']
+            team_abbr = team['abbreviation']
+
+            print(f"  [{i}/{len(all_teams)}] {team_abbr}...", end=" ")
+
+            try:
+                roster = commonteamroster.CommonTeamRoster(
+                    team_id=team_id,
+                    season=self.SEASON,
+                    timeout=30
+                )
+                df = roster.get_data_frames()[0]
+
+                if not df.empty:
+                    team_updated = 0
+                    for _, row in df.iterrows():
+                        player_id = row['PLAYER_ID']
+                        position = row['POSITION']
+
+                        # Update position for players that exist in database
+                        cursor.execute('''
+                            UPDATE player_stats
+                            SET position = ?, team_id = ?
+                            WHERE player_id = ?
+                        ''', (position, team_id, player_id))
+
+                        if cursor.rowcount > 0:
+                            team_updated += 1
+                            updated_count += 1
+                        else:
+                            skipped_count += 1
+
+                    print(f"{team_updated} players updated")
+                else:
+                    print("No roster")
+
+            except Exception as e:
+                print(f"Error: {e}")
+                error_count += 1
+
+            # Rate limiting
+            if i < len(all_teams):
+                time.sleep(delay)
+
+        conn.commit()
+        conn.close()
+
+        print(f"\nPosition collection complete!")
+        print(f"Updated: {updated_count}, Skipped: {skipped_count}, Errors: {error_count}")
+
+        return {'updated': updated_count, 'skipped': skipped_count, 'errors': error_count}
+
     def collect_player_stats(self, player_name: str, collect_shooting_zones: bool = True) -> Optional[Dict]:
         """
         Collect all stats for a single player.
