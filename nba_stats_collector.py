@@ -12,6 +12,7 @@ from nba_api.stats.endpoints import (
     playerdashboardbyshootingsplits,
     teamdashboardbyshootingsplits,
     commonteamroster,
+    commonplayerinfo,
     synergyplaytypes,
     playergamelogs
 )
@@ -207,12 +208,15 @@ class NBAStatsCollector:
                 if shooting_zones:
                     print(f"  Collected {len(shooting_zones)} shooting zones")
 
+            # Get team ID from commonplayerinfo (since PlayerDashboard doesn't include it)
+            team_id = self._get_player_team_id(player_id)
+
             # Combine all stats
             stats = {
                 'player_id': player_id,
                 'player_name': player_full_name,
                 'season': self.SEASON,
-                'team_id': overall_stats.get('TEAM_ID'),
+                'team_id': team_id,
 
                 # Basic stats
                 'points': overall_stats.get('PTS'),
@@ -308,6 +312,23 @@ class NBAStatsCollector:
                 return None
 
             return df.iloc[0].to_dict()
+
+        return self._api_call_with_retry(fetch)
+
+    def _get_player_team_id(self, player_id: int) -> Optional[int]:
+        """Get the current team ID for a player using commonplayerinfo endpoint."""
+        def fetch():
+            info = commonplayerinfo.CommonPlayerInfo(
+                player_id=player_id,
+                timeout=30
+            )
+            df = info.get_data_frames()[0]
+
+            if df.empty:
+                return None
+
+            team_id = df.iloc[0].get('TEAM_ID')
+            return int(team_id) if team_id else None
 
         return self._api_call_with_retry(fetch)
 
