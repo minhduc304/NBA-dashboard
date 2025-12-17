@@ -262,6 +262,61 @@ def get_upcoming_games(days: int = 7) -> List[Dict]:
     return all_games
 
 
+def init_progress_table(db_path: str = DB_PATH):
+    """Create sync_progress table if it doesn't exist."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sync_progress (
+            task_name TEXT PRIMARY KEY,
+            last_synced_date TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def get_sync_progress(task_name: str, db_path: str = DB_PATH) -> str | None:
+    """Get the last synced date for a task."""
+    init_progress_table(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT last_synced_date FROM sync_progress WHERE task_name = ?",
+        (task_name,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def save_sync_progress(task_name: str, last_date: str, db_path: str = DB_PATH):
+    """Save sync progress for a task."""
+    init_progress_table(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO sync_progress (task_name, last_synced_date, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(task_name) DO UPDATE SET
+            last_synced_date = excluded.last_synced_date,
+            updated_at = excluded.updated_at
+    """, (task_name, last_date, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def clear_sync_progress(task_name: str, db_path: str = DB_PATH):
+    """Clear sync progress for a task (to start fresh)."""
+    init_progress_table(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM sync_progress WHERE task_name = ?", (task_name,))
+    conn.commit()
+    conn.close()
+
+
 def sync_games_to_db(games: List[Dict], db_path: str = DB_PATH) -> int:
     """
     Sync games to SQLite database using upsert.
@@ -329,72 +384,90 @@ def sync_games_to_db(games: List[Dict], db_path: str = DB_PATH) -> int:
     return synced
 
 
-def get_full_season_schedule(season: str = '2025-26') -> List[Dict]:
+def get_full_season_schedule(season: str = '2025-26', db_path: str = DB_PATH) -> List[Dict]:
     """
-    Fetch entire season schedule.
+    Fetch entire season schedule by iterating through dates.
+
+    Supports resuming from last synced date if interrupted.
+
+    Note: LeagueGameFinder only returns PAST games with box scores.
+    For future games, we must use ScoreboardV2 for each date.
 
     Args:
         season: NBA season (e.g., '2025-26').
+        db_path: Path to SQLite database for progress tracking.
 
     Returns:
         List of game dictionaries.
     """
-    try:
-        # Fetch all games for the season (one API call)
-        game_finder = leaguegamefinder.LeagueGameFinder(
-            season_nullable=season,
-            league_id_nullable='00',
-            season_type_nullable='Regular Season'
-        )
-        time.sleep(0.6)
+    TASK_NAME = 'full_season_schedule'
+    all_games = []
+    total_synced = 0
 
-        games_data = game_finder.get_normalized_dict()
-        games_list = games_data.get('LeagueGameFinderResults', [])
+    season_start_year = int(season.split('-')[0])
+    end_date = datetime(season_start_year + 1, 4, 15)  # Mid-April
 
-        if not games_list:
-            return []
+    # Check for saved progress to resume from
+    last_synced = get_sync_progress(TASK_NAME, db_path)
+    if last_synced:
+        start_date = datetime.strptime(last_synced, '%Y-%m-%d') + timedelta(days=1)
+        print(f"Resuming from {start_date.strftime('%Y-%m-%d')} (last synced: {last_synced})")
+    else:
+        start_date = datetime.now()
+        print(f"Starting fresh from {start_date.strftime('%Y-%m-%d')}")
 
-        # Group by game_id to get both teams
-        team_info = get_team_info()
-        games_by_id = {}
-
-        for game in games_list:
-            game_id = game.get('GAME_ID', '')
-            matchup = game.get('MATCHUP', '')
-            team_id = game.get('TEAM_ID')
-            game_date = game.get('GAME_DATE', '')
-
-            if game_id not in games_by_id:
-                games_by_id[game_id] = {
-                    'gameId': game_id,
-                    'gameDate': game_date,
-                    'gameTime': '',
-                    'gameStatus': 'Scheduled',
-                    'homeTeam': {'id': None, 'name': '', 'abbreviation': '', 'city': ''},
-                    'awayTeam': {'id': None, 'name': '', 'abbreviation': '', 'city': ''}
-                }
-
-            team = team_info.get(team_id, {})
-            team_data = {
-                'id': team_id,
-                'name': team.get('full_name', ''),
-                'abbreviation': team.get('abbreviation', ''),
-                'city': team.get('city', '')
-            }
-
-            # Determine home/away from matchup string
-            is_home = 'vs.' in matchup
-
-            if is_home:
-                games_by_id[game_id]['homeTeam'] = team_data
-            else:
-                games_by_id[game_id]['awayTeam'] = team_data
-
-        return list(games_by_id.values())
-
-    except Exception as e:
-        print(f"Error fetching full season schedule: {e}")
+    if start_date > end_date:
+        print("Already synced up to end of season!")
         return []
+
+    print(f"Fetching games until {end_date.strftime('%Y-%m-%d')}...")
+
+    current_date = start_date
+    consecutive_empty_days = 0
+    max_empty_days = 7  # Stop if 7 consecutive days have no games
+
+    while current_date <= end_date:
+        date_str = current_date.strftime('%Y-%m-%d')
+
+        try:
+            games = get_games_by_date(date_str)
+
+            if games:
+                all_games.extend(games)
+                consecutive_empty_days = 0
+                # Sync this day's games immediately
+                synced = sync_games_to_db(games, db_path)
+                total_synced += synced
+                print(f"  {date_str}: {len(games)} games ({synced} synced)")
+            else:
+                consecutive_empty_days += 1
+                if consecutive_empty_days == 1:
+                    print(f"  {date_str}: no games")
+
+            # Save progress after each successful date
+            save_sync_progress(TASK_NAME, date_str, db_path)
+
+        except Exception as e:
+            print(f"  {date_str}: ERROR - {e}")
+            print(f"  Progress saved. Run again to resume from {date_str}.")
+            break
+
+        # Early termination if we hit many consecutive days without games
+        if consecutive_empty_days >= max_empty_days:
+            print(f"  Stopping early: {max_empty_days} consecutive days with no games")
+            # Clear progress since we've reached the end
+            clear_sync_progress(TASK_NAME, db_path)
+            break
+
+        current_date += timedelta(days=1)
+
+    # Clear progress if we completed successfully
+    if current_date > end_date:
+        clear_sync_progress(TASK_NAME, db_path)
+        print("Full season sync complete!")
+
+    print(f"Total games fetched: {len(all_games)}, synced: {total_synced}")
+    return all_games
 
 
 def sync_schedule(days_ahead: int = 7, days_back: int = 1, db_path: str = DB_PATH, full_season: bool = False) -> Dict:
@@ -431,10 +504,18 @@ def sync_schedule(days_ahead: int = 7, days_back: int = 1, db_path: str = DB_PAT
 
     # Fetch upcoming games
     if full_season:
-        print("Fetching full season schedule...")
-        season_games = get_full_season_schedule()
+        print("Fetching full season schedule (with progress tracking)...")
+        # get_full_season_schedule syncs incrementally, so we just need to sync past/today games
+        synced = sync_games_to_db(all_games, db_path)
+        season_games = get_full_season_schedule(db_path=db_path)
         all_games.extend(season_games)
-        print(f"Fetched {len(season_games)} games for the season")
+        # Season games already synced incrementally, just return the count
+        return {
+            'total_games_fetched': len(all_games),
+            'games_synced': synced + len(season_games),
+            'dates_processed': dates_processed + ['full_season'],
+            'sync_time': datetime.now().isoformat()
+        }
     else:
         for i in range(1, days_ahead + 1):
             date = (today + timedelta(days=i)).strftime('%Y-%m-%d')
