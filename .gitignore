@@ -2,3 +2,5 @@ nba_stats.db
 /docs
 /venv
 __pycache__
+underdog_config.json
+.env

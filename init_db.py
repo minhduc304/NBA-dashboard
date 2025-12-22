@@ -315,6 +315,46 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_injuries_team ON player_injuries(team_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_injuries_status ON player_injuries(injury_status)')
 
+    # =========================================================================
+    # UNDERDOG PROPS TABLE (fantasy betting lines with history)
+    # =========================================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS underdog_props (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            -- Player info
+            full_name TEXT NOT NULL,
+            team_name TEXT,
+            opponent_name TEXT,
+            position_name TEXT,
+
+            -- Prop line details
+            stat_name TEXT NOT NULL,
+            stat_value REAL NOT NULL,
+            choice TEXT NOT NULL,
+
+            -- Odds
+            american_price INTEGER,
+            decimal_price REAL,
+
+            -- Game info
+            scheduled_at TEXT,
+
+            -- Timestamps
+            updated_at TEXT NOT NULL,
+            scraped_at TEXT NOT NULL
+        )
+    ''')
+
+    # Index for fast lookups and duplicate detection
+    cursor.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_underdog_props_unique
+        ON underdog_props(full_name, stat_name, choice, updated_at)
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_player ON underdog_props(full_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_stat ON underdog_props(stat_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_scheduled ON underdog_props(scheduled_at)')
+
     conn.commit()
     conn.close()
 

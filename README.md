@@ -96,8 +96,6 @@ python verify_data.py
 ## Files
 - `nba_stats_collector.py` - Main data collection module
 - `update_stats.py` - Efficient update script (recommended for daily use)
-- `verify_data.py` - Database verification script
-- `query_play_types.py` - Query and analyze play type statistics
 - `nba_stats.db` - SQLite database (created after first run)
 
 
