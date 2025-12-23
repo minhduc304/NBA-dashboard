@@ -21,7 +21,7 @@ Usage:
     python update_stats.py --collect-team-defense
 
     # ONLY update play types (incremental, skips player updates)
-    # Since play type collection uses a different from the NBA, sometimes its data lags behind. 
+    # Since play type collection uses a third-party company and not the official NBA API, sometimes its data lags behind. 
     # So only run this after regular stats have been updated to make sure the Games Played count is up to date.
     python update_stats.py --collect-play-types
 
@@ -247,28 +247,64 @@ def main():
             print("(Incremental: only processes players with new games)")
             print(f"Using {args.delay}s delay between API calls\n")
 
-            # Get all players from database
+            # Only get players with new games since last play types collection
             conn = sqlite3.connect(collector.db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT player_name FROM player_stats ORDER BY player_name")
-            all_players = [row[0] for row in cursor.fetchall()]
+
+            if args.force_play_types:
+                # Force mode: get all players
+                cursor.execute("""
+                    SELECT ps.player_name, ps.games_played
+                    FROM player_stats ps
+                    WHERE ps.season = ?
+                    ORDER BY ps.player_name
+                """, (collector.SEASON,))
+                players_needing_update = cursor.fetchall()
+                total_players = len(players_needing_update)
+            else:
+                # Incremental: only players where player_play_types GP < player_stats GP
+                cursor.execute("""
+                    SELECT ps.player_name, ps.games_played,
+                           COALESCE(MAX(ppt.games_played), 0) as pt_games_played
+                    FROM player_stats ps
+                    LEFT JOIN player_play_types ppt ON ps.player_id = ppt.player_id AND ppt.season = ?
+                    WHERE ps.season = ?
+                    GROUP BY ps.player_id, ps.player_name, ps.games_played
+                    HAVING pt_games_played < ps.games_played OR pt_games_played = 0
+                    ORDER BY ps.player_name
+                """, (collector.SEASON, collector.SEASON))
+                players_needing_update = cursor.fetchall()
+
+                # Get total player count for reference
+                cursor.execute("SELECT COUNT(*) FROM player_stats WHERE season = ?", (collector.SEASON,))
+                total_players = cursor.fetchone()[0]
+
             conn.close()
 
             collected_count = 0
-            skipped_count = 0
             error_count = 0
-            total = len(all_players)
+            total = len(players_needing_update)
 
-            for i, player_name in enumerate(all_players, 1):
-                print(f"[{i}/{total}] {player_name}...", end=" ")
+            if args.force_play_types:
+                print(f"Force mode: processing all {total} players\n")
+            else:
+                print(f"Found {total} players needing play type updates (out of {total_players} total)\n")
+
+            if total == 0:
+                print("All players already have up-to-date play type data!")
+
+            for i, row in enumerate(players_needing_update, 1):
+                player_name = row[0]
+                games_played = row[1]
+                pt_games = row[2] if len(row) > 2 else 0
+
+                print(f"[{i}/{total}] {player_name} (GP: {games_played}, play types GP: {pt_games})...", end=" ")
 
                 try:
                     result = collector.collect_player_play_types(player_name, delay=args.delay, force=args.force_play_types)
 
                     # Count based on return value
-                    if result == 'skipped':
-                        skipped_count += 1
-                    elif result is True:
+                    if result is True:
                         collected_count += 1
                     else:
                         error_count += 1
@@ -283,7 +319,7 @@ def main():
 
             print(f"\n{'=' * 60}")
             print(f"Play types collection complete!")
-            print(f"Collected: {collected_count}, Skipped: {skipped_count}, Errors: {error_count}")
+            print(f"Collected: {collected_count}, Errors: {error_count}")
             print(f"{'=' * 60}")
 
         # Collect player positions if requested
