@@ -65,10 +65,20 @@ async fn main() {
         .route("/api/players/{id}/shooting-zones", get(routes::players::get_player_shooting_zones))
         .route("/api/players/{id}/assist-zones", get(routes::players::get_player_assist_zones))
         .route("/api/players/{id}/play-types", get(routes::players::get_player_play_types))
+        .route("/api/players/{id}/game-logs", get(routes::players::get_player_game_logs))
 
-        // Team defensive endpoints
+        // Team endpoints
+        .route("/api/teams", get(routes::teams::get_teams))
+        .route("/api/teams/search", get(routes::teams::search_team))
+        .route("/api/teams/{id}", get(routes::teams::get_team_by_id))
         .route("/api/teams/{id}/defensive-zones", get(routes::zones::get_team_defensive_zones))
         .route("/api/teams/{id}/defensive-play-types", get(routes::play_types::get_team_defensive_play_types))
+
+        // Schedule endpoints
+        .route("/api/schedule", get(routes::schedule::get_schedule))
+        .route("/api/schedule/today", get(routes::schedule::get_todays_games))
+        .route("/api/schedule/upcoming", get(routes::schedule::get_upcoming_games))
+        .route("/api/schedule/tomorrow/rosters", get(routes::schedule::get_tomorrow_rosters))
 
         .layer(cors)
         .layer(TraceLayer::new_for_http())

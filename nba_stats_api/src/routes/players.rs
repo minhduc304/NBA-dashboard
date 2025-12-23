@@ -115,3 +115,32 @@ pub async fn get_player_play_types(
 
     Ok(Json(play_types))
 }
+
+// Query parameters for game logs
+#[derive(Deserialize)]
+pub struct GameLogsQuery {
+    /// Number of games to return (default: 20, max: 82)
+    /// Matches the "games" slider in the frontend UI
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+fn default_limit() -> i64 {
+    20
+}
+
+// GET /api/players/:id/game-logs - Get player's game-by-game stats
+pub async fn get_player_game_logs(
+    State(pool): State<SqlitePool>,
+    Path(player_id): Path<i64>,
+    Query(params): Query<GameLogsQuery>,
+) -> Result<Json<Vec<crate::models::PlayerGameLog>>, StatusCode> {
+    // Cap limit at 82 (max games in a season)
+    let limit = params.limit.min(82);
+
+    let game_logs = db::get_player_game_logs(&pool, player_id, limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(game_logs))
+}
