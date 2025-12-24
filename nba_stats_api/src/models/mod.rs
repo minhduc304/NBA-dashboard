@@ -262,3 +262,60 @@ pub struct PlayerGameLog {
     pub tov: Option<i32>,
 }
 
+// Underdog prop line from database
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct UnderdogProp {
+    pub id: i64,
+    pub full_name: String,
+    pub team_name: Option<String>,
+    pub opponent_name: Option<String>,
+    pub stat_name: String,
+    pub stat_value: f64,
+    pub choice: String,
+    pub american_price: Option<i64>,
+    pub decimal_price: Option<f64>,
+    pub scheduled_at: Option<String>,
+}
+
+// Response for player props endpoint
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerPropsResponse {
+    pub player_name: String,
+    pub opponent_id: Option<i64>,
+    pub opponent_name: Option<String>,
+    pub props: Vec<PropLine>,
+}
+
+// Grouped prop line (over/under combined)
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropLine {
+    pub stat_name: String,
+    pub line: f64,
+    pub over_odds: Option<i64>,
+    pub under_odds: Option<i64>,
+    pub opponent: Option<String>,
+    pub scheduled_at: Option<String>,
+}
+
+// Play type matchup analysis
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayTypeMatchup {
+    pub play_type: String,
+    pub player_ppg: f32,
+    pub pct_of_total: f32,
+    pub opp_ppp: f32,
+    pub opp_rank: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayTypeMatchupResponse {
+    pub player_name: String,
+    pub opponent_name: String,
+    pub matchups: Vec<PlayTypeMatchup>,
+}
+

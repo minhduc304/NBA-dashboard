@@ -261,3 +261,59 @@ pub async fn get_player_game_logs(pool: &SqlitePool, player_id: i64, limit: i64)
     .await
 }
 
+/// Get underdog props for a player by name (for tomorrow's games)
+pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Vec<UnderdogProp>, sqlx::Error> {
+    let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    sqlx::query_as::<_, UnderdogProp>(
+        r#"SELECT id, full_name, team_name, opponent_name, stat_name, stat_value,
+                  choice, american_price, decimal_price, scheduled_at
+           FROM underdog_props
+           WHERE full_name = ? AND DATE(scheduled_at) = ?
+           ORDER BY stat_name, choice"#
+    )
+    .bind(player_name)
+    .bind(&tomorrow)
+    .fetch_all(pool)
+    .await
+}
+
+/// Get underdog props for a player by ID (looks up name first)
+pub async fn get_player_props_by_id(pool: &SqlitePool, player_id: i64) -> Result<Vec<UnderdogProp>, sqlx::Error> {
+    // First get the player name
+    let player = get_player_by_id(pool, player_id).await?;
+
+    match player {
+        Some(p) => get_player_props(pool, &p.player_name).await,
+        None => Ok(vec![]),
+    }
+}
+
+/// Get team defensive play type rankings (1 = best defense, 30 = worst)
+pub async fn get_team_defensive_play_type_ranks(pool: &SqlitePool) -> Result<std::collections::HashMap<(i64, String), i32>, sqlx::Error> {
+    // Get all team defensive play types ordered by PPP (lower = better defense)
+    let rows = sqlx::query_as::<_, (i64, String, f32)>(
+        r#"SELECT team_id, play_type, ppp FROM team_defensive_play_types ORDER BY play_type, ppp ASC"#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Group by play_type and assign ranks
+    let mut ranks: std::collections::HashMap<(i64, String), i32> = std::collections::HashMap::new();
+    let mut current_play_type = String::new();
+    let mut rank = 0;
+
+    for (team_id, play_type, _ppp) in rows {
+        if play_type != current_play_type {
+            current_play_type = play_type.clone();
+            rank = 0;
+        }
+        rank += 1;
+        ranks.insert((team_id, play_type), rank);
+    }
+
+    Ok(ranks)
+}
+

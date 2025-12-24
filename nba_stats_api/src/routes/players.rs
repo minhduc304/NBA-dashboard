@@ -5,7 +5,7 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePool;
-use crate::models::PlayerStats;
+use crate::models::{PlayerStats, PlayTypeMatchup, PlayTypeMatchupResponse};
 use crate::db;
 
 // Query parameters for listing players
@@ -143,4 +143,71 @@ pub async fn get_player_game_logs(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(game_logs))
+}
+
+// Query parameters for play type matchup
+#[derive(Deserialize)]
+pub struct PlayTypeMatchupQuery {
+    opponent_id: i64,
+}
+
+// GET /api/players/:id/play-type-matchup?opponent_id=123 - Get player's play type matchup vs opponent
+pub async fn get_player_play_type_matchup(
+    State(pool): State<SqlitePool>,
+    Path(player_id): Path<i64>,
+    Query(params): Query<PlayTypeMatchupQuery>,
+) -> Result<Json<PlayTypeMatchupResponse>, StatusCode> {
+    // Get player info
+    let player = db::get_player_by_id(&pool, player_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Get opponent team info
+    let opponent = db::get_team_by_id(&pool, params.opponent_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Get player play types
+    let player_play_types = db::get_player_playtypes(&pool, player_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Get opponent defensive play types
+    let opp_defense = db::get_defensive_play_types(&pool, params.opponent_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Get all team defensive rankings
+    let ranks = db::get_team_defensive_play_type_ranks(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Build matchup data
+    let mut matchups: Vec<PlayTypeMatchup> = player_play_types
+        .iter()
+        .filter_map(|pt| {
+            // Find opponent's defensive stats for this play type
+            let opp_def = opp_defense.iter().find(|d| d.play_type == pt.play_type)?;
+            let rank = ranks.get(&(params.opponent_id, pt.play_type.clone())).copied().unwrap_or(0);
+
+            Some(PlayTypeMatchup {
+                play_type: pt.play_type.clone(),
+                player_ppg: pt.points_per_game,
+                pct_of_total: pt.pct_of_total_points,
+                opp_ppp: opp_def.ppp,
+                opp_rank: rank,
+            })
+        })
+        .collect();
+
+    // Sort by player PPG descending
+    matchups.sort_by(|a, b| b.player_ppg.partial_cmp(&a.player_ppg).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(Json(PlayTypeMatchupResponse {
+        player_name: player.player_name,
+        opponent_name: opponent.full_name,
+        matchups,
+    }))
 }
