@@ -346,13 +346,14 @@ curl "http://localhost:8080/api/schedule/today"
 curl "http://localhost:8080/api/schedule/upcoming"
 ```
 
-### 18. Get Tomorrow's Rosters
-- **GET** `/api/schedule/tomorrow/rosters`
-- Returns tomorrow's games with full player rosters and injury status
+### 18. Get Upcoming Games with Rosters
+- **GET** `/api/schedule/upcoming/rosters`
+- Returns today's and tomorrow's games with full player rosters and injury status
+- Games that have already started (based on scheduled time) are automatically filtered out
 
 **Example:**
 ```bash
-curl "http://localhost:8080/api/schedule/tomorrow/rosters"
+curl "http://localhost:8080/api/schedule/upcoming/rosters"
 ```
 
 **Response:**

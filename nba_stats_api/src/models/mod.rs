@@ -9,6 +9,7 @@ pub struct RosterPlayer {
     pub position: Option<String>,
     pub injury_status: String,
     pub injury_description: Option<String>,
+    pub has_props: bool,
 }
 
 /// Row from database for roster players
@@ -19,6 +20,7 @@ pub struct RosterPlayerRow {
     pub position: Option<String>,
     pub injury_status: Option<String>,
     pub injury_description: Option<String>,
+    pub has_props: bool,
 }
 
 impl RosterPlayerRow {
@@ -29,6 +31,7 @@ impl RosterPlayerRow {
             position: self.position.clone(),
             injury_status: self.injury_status.clone().unwrap_or_else(|| "Available".to_string()),
             injury_description: self.injury_description.clone(),
+            has_props: self.has_props,
         }
     }
 }

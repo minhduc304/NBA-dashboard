@@ -147,62 +147,24 @@ pub async fn get_upcoming_schedule(pool: &SqlitePool, days: i32) -> Result<Vec<S
     .await
 }
 
-/// Get the next game day (today, tomorrow, or the next day with games)
-pub async fn get_next_game_day_schedule(pool: &SqlitePool) -> Result<Vec<ScheduleRow>, sqlx::Error> {
-    let now = chrono::Local::now();
-    let today = now.format("%Y-%m-%d").to_string();
-
-    // First, try to get today's games
-    let today_rows = sqlx::query_as::<_, ScheduleRow>(
-        r#"SELECT * FROM schedule
-           WHERE game_date = ?
-           ORDER BY game_time"#
-    )
-    .bind(&today)
-    .fetch_all(pool)
-    .await?;
-
-    if !today_rows.is_empty() {
-        return Ok(today_rows);
-    }
-
-    // If no games today, try tomorrow
-    let tomorrow = (now + chrono::Duration::days(1))
+/// Get today + tomorrow schedule combined (for upcoming rosters endpoint)
+pub async fn get_upcoming_schedule_for_roster(pool: &SqlitePool) -> Result<Vec<ScheduleRow>, sqlx::Error> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
         .format("%Y-%m-%d")
         .to_string();
-
-    let tomorrow_rows = sqlx::query_as::<_, ScheduleRow>(
-        r#"SELECT * FROM schedule
-           WHERE game_date = ?
-           ORDER BY game_time"#
-    )
-    .bind(&tomorrow)
-    .fetch_all(pool)
-    .await?;
-
-    if !tomorrow_rows.is_empty() {
-        return Ok(tomorrow_rows);
-    }
-
-    // If no games today or tomorrow, find the next day with games within next 14 days
-    let end_date = (now + chrono::Duration::days(14))
-        .format("%Y-%m-%d")
-        .to_string();
-
     sqlx::query_as::<_, ScheduleRow>(
         r#"SELECT * FROM schedule
-           WHERE game_date > ?
-           AND game_date <= ?
-           ORDER BY game_date, game_time
-           LIMIT 20"# // Reasonable limit for a single day's games
+           WHERE game_date IN (?, ?)
+           ORDER BY game_date, game_time"#
     )
     .bind(&today)
-    .bind(&end_date)
+    .bind(&tomorrow)
     .fetch_all(pool)
     .await
 }
 
-/// Get players for a specific team (with injury status if available)
+/// Get players for a specific team (with injury status and props availability)
 pub async fn get_team_roster(pool: &SqlitePool, team_id: i64) -> Result<Vec<RosterPlayerRow>, sqlx::Error> {
     sqlx::query_as::<_, RosterPlayerRow>(
         r#"SELECT
@@ -210,7 +172,8 @@ pub async fn get_team_roster(pool: &SqlitePool, team_id: i64) -> Result<Vec<Rost
                ps.player_name,
                ps.position,
                pi.injury_status,
-               pi.injury_description
+               pi.injury_description,
+               (SELECT 1 FROM underdog_props WHERE full_name = ps.player_name LIMIT 1) IS NOT NULL as has_props
            FROM player_stats ps
            LEFT JOIN player_injuries pi ON ps.player_id = pi.player_id
            WHERE ps.team_id = ?
@@ -262,6 +225,7 @@ pub async fn get_player_game_logs(pool: &SqlitePool, player_id: i64, limit: i64)
 }
 
 /// Get underdog props for a player by name (for tomorrow's games)
+/// Only returns the latest version of each line (by updated_at timestamp)
 pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Vec<UnderdogProp>, sqlx::Error> {
     let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
         .format("%Y-%m-%d")
@@ -270,8 +234,17 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
     sqlx::query_as::<_, UnderdogProp>(
         r#"SELECT id, full_name, team_name, opponent_name, stat_name, stat_value,
                   choice, american_price, decimal_price, scheduled_at
-           FROM underdog_props
-           WHERE full_name = ? AND DATE(scheduled_at) = ?
+           FROM (
+               SELECT id, full_name, team_name, opponent_name, stat_name, stat_value,
+                      choice, american_price, decimal_price, scheduled_at,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY stat_name, choice
+                          ORDER BY updated_at DESC
+                      ) as rn
+               FROM underdog_props
+               WHERE full_name = ? AND DATE(scheduled_at) = ?
+           )
+           WHERE rn = 1
            ORDER BY stat_name, choice"#
     )
     .bind(player_name)

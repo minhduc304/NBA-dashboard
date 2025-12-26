@@ -80,7 +80,7 @@ async fn main() {
         .route("/api/schedule", get(routes::schedule::get_schedule))
         .route("/api/schedule/today", get(routes::schedule::get_todays_games))
         .route("/api/schedule/upcoming", get(routes::schedule::get_upcoming_games))
-        .route("/api/schedule/tomorrow/rosters", get(routes::schedule::get_tomorrow_rosters))
+        .route("/api/schedule/upcoming/rosters", get(routes::schedule::get_upcoming_rosters))
 
         .layer(cors)
         .layer(TraceLayer::new_for_http())

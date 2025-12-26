@@ -3,9 +3,9 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
+use chrono::Timelike;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePool;
-use std::process::Command;
 use crate::db;
 use crate::models::{ScheduleResponse, ScheduleGame, RosterResponse, GameWithRosters, TeamInfo};
 
@@ -25,13 +25,10 @@ pub struct ScheduleQuery {
 /// Query params:
 /// - date: Filter games by date (YYYY-MM-DD format)
 /// - team: Filter games by team abbreviation
-///
-/// First tries to read from SQLite cache. Falls back to Python script if no cached data.
 pub async fn get_schedule(
     State(pool): State<SqlitePool>,
     Query(params): Query<ScheduleQuery>,
 ) -> Result<Json<ScheduleResponse>, StatusCode> {
-    // Try to get data from SQLite first
     let db_result = if let Some(date) = &params.date {
         db::get_schedule_by_date(&pool, date).await
     } else if let Some(team) = &params.team {
@@ -40,159 +37,164 @@ pub async fn get_schedule(
         db::get_todays_schedule(&pool).await
     };
 
-    // If we got data from the database, return it
-    if let Ok(rows) = db_result {
-        if !rows.is_empty() {
+    match db_result {
+        Ok(rows) => {
             let games: Vec<ScheduleGame> = rows.iter().map(|r| r.to_schedule_game()).collect();
             let count = games.len();
-            return Ok(Json(ScheduleResponse { games, count }));
+            Ok(Json(ScheduleResponse { games, count }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to get schedule: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    // Fallback to Python script if no cached data
-    tracing::info!("No cached schedule data, falling back to Python script");
-    get_schedule_from_python(params).await
 }
 
 /// GET /api/schedule/today - Get today's games
-///
-/// First tries to read from SQLite cache. Falls back to Python script if no cached data.
 pub async fn get_todays_games(
     State(pool): State<SqlitePool>,
 ) -> Result<Json<ScheduleResponse>, StatusCode> {
-    // Try to get data from SQLite first
-    if let Ok(rows) = db::get_todays_schedule(&pool).await {
-        if !rows.is_empty() {
+    match db::get_todays_schedule(&pool).await {
+        Ok(rows) => {
             let games: Vec<ScheduleGame> = rows.iter().map(|r| r.to_schedule_game()).collect();
             let count = games.len();
-            return Ok(Json(ScheduleResponse { games, count }));
+            Ok(Json(ScheduleResponse { games, count }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to get today's schedule: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    // Fallback to Python script
-    tracing::info!("No cached today's schedule, falling back to Python script");
-    get_schedule_from_python(ScheduleQuery { date: None, team: None }).await
 }
 
 /// GET /api/schedule/upcoming - Get upcoming games for next 7 days
-///
-/// First tries to read from SQLite cache. Falls back to Python script if no cached data.
 pub async fn get_upcoming_games(
     State(pool): State<SqlitePool>,
 ) -> Result<Json<ScheduleResponse>, StatusCode> {
-    // Try to get data from SQLite first
-    if let Ok(rows) = db::get_upcoming_schedule(&pool, 7).await {
-        if !rows.is_empty() {
+    match db::get_upcoming_schedule(&pool, 7).await {
+        Ok(rows) => {
             let games: Vec<ScheduleGame> = rows.iter().map(|r| r.to_schedule_game()).collect();
             let count = games.len();
-            return Ok(Json(ScheduleResponse { games, count }));
+            Ok(Json(ScheduleResponse { games, count }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to get upcoming schedule: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    // Fallback to Python script
-    tracing::info!("No cached upcoming schedule, falling back to Python script");
-    let output = Command::new("../venv/bin/python")
-        .arg("../nba_schedule.py")
-        .arg("--upcoming")
-        .arg("7")
-        .output()
-        .map_err(|e| {
-            tracing::error!("Failed to execute Python script: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("Python script failed: {}", stderr);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    let response: ScheduleResponse = serde_json::from_str(&stdout)
-        .map_err(|e| {
-            tracing::error!("Failed to parse schedule response: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    Ok(Json(response))
 }
 
-/// Fallback: Get schedule from Python script (used when no cached data available)
-async fn get_schedule_from_python(params: ScheduleQuery) -> Result<Json<ScheduleResponse>, StatusCode> {
-    let mut args = vec![];
+/// Parse game time string (e.g., "7:30 PM" or "7:30 pm ET") into hour and minute
+fn parse_game_time(time_str: &str) -> Option<(u32, u32)> {
+    // Remove timezone indicator if present
+    let clean_time = time_str
+        .trim()
+        .trim_end_matches("ET")
+        .trim_end_matches("EST")
+        .trim_end_matches("EDT")
+        .trim();
 
-    if let Some(date) = &params.date {
-        args.push("--date".to_string());
-        args.push(date.clone());
-    } else if params.team.is_none() {
-        args.push("--today".to_string());
+    // Match pattern like "7:30 PM" or "10:00 AM"
+    let re = regex::Regex::new(r"(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)").ok()?;
+    let caps = re.captures(clean_time)?;
+
+    let mut hours: u32 = caps.get(1)?.as_str().parse().ok()?;
+    let minutes: u32 = caps.get(2)?.as_str().parse().ok()?;
+    let am_pm = caps.get(3)?.as_str().to_uppercase();
+
+    // Convert to 24-hour format
+    if am_pm == "PM" && hours != 12 {
+        hours += 12;
+    } else if am_pm == "AM" && hours == 12 {
+        hours = 0;
     }
 
-    if let Some(team) = &params.team {
-        args.push("--team".to_string());
-        args.push(team.clone());
-    }
-
-    let output = Command::new("../venv/bin/python")
-        .arg("../nba_schedule.py")
-        .args(&args)
-        .output()
-        .map_err(|e| {
-            tracing::error!("Failed to execute Python script: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("Python script failed: {}", stderr);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    let response: ScheduleResponse = serde_json::from_str(&stdout)
-        .map_err(|e| {
-            tracing::error!("Failed to parse schedule response: {}", e);
-            tracing::error!("Raw output: {}", stdout);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    Ok(Json(response))
+    Some((hours, minutes))
 }
 
-/// GET /api/schedule/tomorrow/rosters - Get tomorrow's games with full player rosters
+/// Check if a game has started based on its date and time
+fn has_game_started(game_date: &str, game_time: &Option<String>) -> bool {
+    let now = chrono::Local::now();
+
+    // Parse game date
+    let parsed_date = chrono::NaiveDate::parse_from_str(game_date, "%Y-%m-%d");
+    let game_date_parsed = match parsed_date {
+        Ok(d) => d,
+        Err(_) => return false, // Can't parse, assume not started
+    };
+
+    // If game is tomorrow, it hasn't started
+    let today = now.date_naive();
+    if game_date_parsed > today {
+        return false;
+    }
+
+    // If game is before today, it has started (and finished)
+    if game_date_parsed < today {
+        return true;
+    }
+
+    // Game is today - check the time
+    let time_str = match game_time {
+        Some(t) => t,
+        None => return false, // No time info, assume not started
+    };
+
+    // Handle "TBD" or "Scheduled" - assume not started
+    if time_str == "TBD" || time_str == "Scheduled" {
+        return false;
+    }
+
+    let (game_hour, game_minute) = match parse_game_time(time_str) {
+        Some((h, m)) => (h, m),
+        None => return false, // Can't parse time, assume not started
+    };
+
+    // Compare current time with game time (both in local/EST)
+    let current_hour = now.hour();
+    let current_minute = now.minute();
+
+    if current_hour > game_hour {
+        return true;
+    } else if current_hour == game_hour && current_minute >= game_minute {
+        return true;
+    }
+
+    false
+}
+
+/// GET /api/schedule/upcoming/rosters - Get upcoming games (today + tomorrow) with full player rosters
 ///
-/// Returns games for the next game day (tomorrow, or the next day with games if tomorrow is empty).
+/// Returns today's and tomorrow's games that haven't started yet.
+/// Games are filtered out once their scheduled start time has passed.
 /// Each game includes full roster for both teams with player info and injury status.
-pub async fn get_tomorrow_rosters(
+pub async fn get_upcoming_rosters(
     State(pool): State<SqlitePool>,
 ) -> Result<Json<RosterResponse>, StatusCode> {
-    // Get tomorrow's games (or next game day)
-    let schedule_rows = db::get_next_game_day_schedule(&pool)
+    // Get today + tomorrow games
+    let schedule_rows = db::get_upcoming_schedule_for_roster(&pool)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get next game day schedule: {}", e);
+            tracing::error!("Failed to get upcoming schedule: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    if schedule_rows.is_empty() {
+    // Filter out games that have already started
+    let upcoming_games: Vec<_> = schedule_rows
+        .into_iter()
+        .filter(|game| !has_game_started(&game.game_date, &game.game_time))
+        .collect();
+
+    if upcoming_games.is_empty() {
         return Ok(Json(RosterResponse {
             games: vec![],
             count: 0,
         }));
     }
 
-    // Group games by the first game's date (they should all be the same day)
-    let target_date = &schedule_rows[0].game_date;
-    let games_for_day: Vec<_> = schedule_rows
-        .iter()
-        .filter(|g| &g.game_date == target_date)
-        .collect();
-
     let mut games_with_rosters = Vec::new();
 
-    for game in games_for_day {
+    for game in &upcoming_games {
         // Get rosters for both teams
         let home_roster = db::get_team_roster(&pool, game.home_team_id)
             .await
