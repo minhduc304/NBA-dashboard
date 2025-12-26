@@ -14,6 +14,9 @@ Usage:
     # ONLY collect game logs (single API call, incremental)
     python update_stats.py --collect-game-logs
 
+    # ONLY collect game scores (single API call, updates schedule with final scores)
+    python update_stats.py --collect-game-scores
+
     # Update with assist zones (incremental, only processes new games)
     python update_stats.py --collect-assist-zones
 
@@ -81,6 +84,8 @@ def main():
                        help='Only collect rostered players (excludes ~45 free agents, saves API calls)')
     parser.add_argument('--collect-positions', action='store_true',
                        help='Collect position data for all players from team rosters (30 API calls)')
+    parser.add_argument('--collect-game-scores', action='store_true',
+                       help='Collect final scores for completed games (single API call, updates schedule table)')
 
     args = parser.parse_args()
 
@@ -116,9 +121,9 @@ def main():
 
     else:
         # Check if we should update players or just collect specific data types
-        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types, positions)
+        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types, positions, game scores)
         only_collecting_specific = (
-            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types or args.collect_positions) and
+            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types or args.collect_positions or args.collect_game_scores) and
             not args.collect_assist_zones and
             not args.include_new and
             not args.add_new_only
@@ -331,6 +336,16 @@ def main():
             print(f"Using {args.delay}s delay between API calls\n")
 
             collector.collect_all_player_positions(delay=args.delay)
+
+        # Collect game scores if requested
+        if args.collect_game_scores:
+            print("\n" + "=" * 60)
+            print("GAME SCORES COLLECTION")
+            print("=" * 60)
+            print("Collecting final scores for completed games...")
+            print("(Single API call, updates schedule table with home/away scores)\n")
+
+            collector.collect_game_scores()
 
 
 if __name__ == "__main__":

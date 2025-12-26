@@ -14,7 +14,8 @@ from nba_api.stats.endpoints import (
     commonteamroster,
     commonplayerinfo,
     synergyplaytypes,
-    playergamelogs
+    playergamelogs,
+    leaguegamelog
 )
 import time
 from requests.exceptions import ReadTimeout, ConnectionError
@@ -2460,6 +2461,81 @@ class NBAStatsCollector:
         except Exception as e:
             print(f"Error collecting game logs: {e}")
             return {'inserted': 0, 'skipped': 0}
+
+    def collect_game_scores(self) -> Dict[str, int]:
+        """
+        Collect final scores for all games and update the schedule table.
+
+        Uses LeagueGameLog endpoint to get team scores for each game,
+        then matches them to home/away teams in the schedule table.
+
+        Returns:
+            Dict with 'updated' count of games with scores added
+        """
+        print(f"Fetching game scores for {self.SEASON} season...")
+
+        try:
+            # Get all team game logs (includes GAME_ID, TEAM_ID, PTS, WL)
+            response = leaguegamelog.LeagueGameLog(
+                season=self.SEASON,
+                season_type_all_star='Regular Season',
+                player_or_team_abbreviation='T',  # T for Team
+                timeout=60
+            )
+            df = response.get_data_frames()[0]
+
+            if df.empty:
+                print("No game data found.")
+                return {'updated': 0}
+
+            print(f"Fetched {len(df)} team game entries from API.")
+
+            # Build a mapping of (game_id, team_id) -> points
+            game_scores = {}
+            for _, row in df.iterrows():
+                game_id = row['GAME_ID']
+                team_id = row['TEAM_ID']
+                pts = row['PTS']
+                game_scores[(game_id, team_id)] = pts
+
+            # Update schedule table with scores
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all games from schedule that don't have scores yet
+            cursor.execute("""
+                SELECT game_id, home_team_id, away_team_id
+                FROM schedule
+                WHERE home_score IS NULL OR away_score IS NULL
+            """)
+            games_to_update = cursor.fetchall()
+
+            updated_count = 0
+            for game_id, home_team_id, away_team_id in games_to_update:
+                home_pts = game_scores.get((game_id, home_team_id))
+                away_pts = game_scores.get((game_id, away_team_id))
+
+                if home_pts is not None and away_pts is not None:
+                    cursor.execute("""
+                        UPDATE schedule
+                        SET home_score = ?, away_score = ?, last_updated = CURRENT_TIMESTAMP
+                        WHERE game_id = ?
+                    """, (home_pts, away_pts, game_id))
+                    updated_count += 1
+
+            conn.commit()
+            conn.close()
+
+            print(f"\n{'=' * 60}")
+            print(f"Game scores collection complete!")
+            print(f"Updated: {updated_count} games with final scores")
+            print(f"{'=' * 60}")
+
+            return {'updated': updated_count}
+
+        except Exception as e:
+            print(f"Error collecting game scores: {e}")
+            return {'updated': 0}
 
 
 if __name__ == "__main__":

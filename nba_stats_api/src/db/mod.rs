@@ -199,23 +199,47 @@ pub async fn get_team_roster(pool: &SqlitePool, team_id: i64) -> Result<Vec<Rost
 pub async fn get_player_game_logs(pool: &SqlitePool, player_id: i64, limit: i64) -> Result<Vec<PlayerGameLog>, sqlx::Error> {
     sqlx::query_as::<_, PlayerGameLog>(
         r#"SELECT
-               game_id,
-               player_id,
-               team_id,
-               season,
-               game_date,
-               matchup,
-               min,
-               pts,
-               reb,
-               ast,
-               stl,
-               blk,
-               fg3m,
-               tov
-           FROM player_game_logs
-           WHERE player_id = ?
-           ORDER BY game_date DESC
+               pgl.game_id,
+               pgl.player_id,
+               pgl.team_id,
+               pgl.season,
+               pgl.game_date,
+               pgl.matchup,
+               CASE
+                   WHEN s.home_score IS NOT NULL AND s.away_score IS NOT NULL THEN
+                       CASE
+                           WHEN pgl.team_id = s.home_team_id THEN
+                               CASE WHEN s.home_score > s.away_score THEN 'W' ELSE 'L' END
+                           ELSE
+                               CASE WHEN s.away_score > s.home_score THEN 'W' ELSE 'L' END
+                       END
+                   ELSE NULL
+               END as wl,
+               pgl.min,
+               pgl.pts,
+               pgl.reb,
+               pgl.ast,
+               pgl.stl,
+               pgl.blk,
+               pgl.fgm,
+               pgl.fga,
+               pgl.fg3m,
+               pgl.fg3a,
+               pgl.ftm,
+               pgl.fta,
+               pgl.tov,
+               CASE
+                   WHEN s.home_score IS NOT NULL AND s.away_score IS NOT NULL THEN
+                       CASE
+                           WHEN pgl.team_id = s.home_team_id THEN s.home_score - s.away_score
+                           ELSE s.away_score - s.home_score
+                       END
+                   ELSE NULL
+               END as game_margin
+           FROM player_game_logs pgl
+           LEFT JOIN schedule s ON pgl.game_id = s.game_id
+           WHERE pgl.player_id = ?
+           ORDER BY pgl.game_date DESC
            LIMIT ?"#
     )
     .bind(player_id)

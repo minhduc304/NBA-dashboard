@@ -116,7 +116,7 @@ pub struct ScheduleRow {
     pub away_team_name: Option<String>,
     pub away_team_abbreviation: Option<String>,
     pub away_team_city: Option<String>,
-    pub last_updated: Option<String>,
+    // pub last_updated: Option<String>,
 }
 
 impl ScheduleRow {
@@ -255,14 +255,21 @@ pub struct PlayerGameLog {
     pub season: Option<String>,
     pub game_date: Option<String>,
     pub matchup: Option<String>,
+    pub wl: Option<String>,
     pub min: Option<f32>,
     pub pts: Option<i32>,
     pub reb: Option<i32>,
     pub ast: Option<i32>,
     pub stl: Option<i32>,
     pub blk: Option<i32>,
+    pub fgm: Option<i32>,
+    pub fga: Option<i32>,
     pub fg3m: Option<i32>,
+    pub fg3a: Option<i32>,
+    pub ftm: Option<i32>,
+    pub fta: Option<i32>,
     pub tov: Option<i32>,
+    pub game_margin: Option<i32>,
 }
 
 // Underdog prop line from database

@@ -35,6 +35,9 @@ python update_stats.py --collect-assist-zones --delay 0.6
 # ONLY collect game logs (single API call, incremental)
 python update_stats.py --collect-game-logs
 
+# ONLY collect game scores (single API call, updates schedule with final scores)
+python update_stats.py --collect-game-scores
+
 # ONLY update team defensive zones (all 30 teams, skips player updates)
 python update_stats.py --collect-team-defense --delay 0.6
 
@@ -55,7 +58,7 @@ python update_stats.py --collect-team-defense --collect-play-types --delay 1.0
 python update_stats.py --collect-team-defense --collect-team-play-types --delay 0.8
 
 # Update EVERYTHING at once (recommended for daily updates)
-python update_stats.py --collect-assist-zones --collect-team-defense --collect-team-play-types --collect-play-types --delay 1.0
+python update_stats.py --collect-assist-zones --collect-team-defense --collect-team-play-types --collect-play-types --collect-game-scores --delay 1.0
 
 # Add new active players (including free agents)
 python update_stats.py --include-new
@@ -85,6 +88,7 @@ python update_stats.py --collect-assist-zones --delay 1.5  # Assist zones only (
 python update_stats.py --collect-team-defense --delay 0.6  # Team defensive zones only (30 teams, quick)
 python update_stats.py --collect-team-play-types --delay 0.8  # Team defensive play types only (30 teams, ~5-8 min)
 python update_stats.py --collect-play-types --delay 1.0    # Player play types only (incremental, skips player updates)
+python update_stats.py --collect-game-scores               # Game scores only (single API call, updates schedule)
 ```
 
 ### Verify Data

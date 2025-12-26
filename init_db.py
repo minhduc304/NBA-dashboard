@@ -282,10 +282,12 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
             home_team_name TEXT,
             home_team_abbreviation TEXT,
             home_team_city TEXT,
+            home_score INTEGER,
             away_team_id INTEGER NOT NULL,
             away_team_name TEXT,
             away_team_abbreviation TEXT,
             away_team_city TEXT,
+            away_score INTEGER,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
