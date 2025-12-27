@@ -1492,23 +1492,57 @@ class NBAStatsCollector:
 
         team_id = team['id']
 
-        # Check if we should skip
+        # Check if we should skip 
         if not force:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
+            # Get stored games_played from existing data
             cursor.execute("""
-                SELECT COUNT(*)
+                SELECT games_played
                 FROM team_defensive_play_types
                 WHERE team_id = ? AND season = ?
+                LIMIT 1
             """, (team_id, self.SEASON))
 
-            count = cursor.fetchone()[0]
+            result = cursor.fetchone()
             conn.close()
 
-            if count > 0:
-                print(f"Skipped (already collected)")
-                return 'skipped'
+            if result:
+                stored_gp = int(result[0]) if result[0] is not None else 0
+
+                # Get current GP from API using a single play type call
+                try:
+                    synergy = synergyplaytypes.SynergyPlayTypes(
+                        league_id='00',
+                        season=self.SEASON,
+                        season_type_all_star='Regular Season',
+                        player_or_team_abbreviation='T',
+                        per_mode_simple='PerGame',
+                        play_type_nullable='Isolation',
+                        type_grouping_nullable='defensive'
+                    )
+
+                    df = synergy.synergy_play_type.get_data_frame()
+                    team_data = df[df['TEAM_ID'] == team_id]
+
+                    if not team_data.empty:
+                        current_gp = int(team_data.iloc[0]['GP'])
+
+                        if current_gp <= stored_gp:
+                            print(f"Skipped (no new games, GP: {current_gp})")
+                            return 'skipped'
+                        else:
+                            print(f"Updating (GP increased: {stored_gp} → {current_gp})")
+                    else:
+                        # No data from API, skip to be safe
+                        print(f"Skipped (no API data, stored GP: {stored_gp})")
+                        return 'skipped'
+
+                except Exception as e:
+                    # Couldn't fetch current GP, skip to be safe
+                    print(f"Skipped (API error: {e})")
+                    return 'skipped'
 
         print(f"Collecting defensive play type stats for {team_name}...")
         print(f"Fetching {len(PLAY_TYPES)} play types...\n")
