@@ -34,6 +34,7 @@ dotenvy = "0.15.7"
 # Error handling
 thiserror = "1.0"
 chrono = "0.4.42"
+chrono-tz = "0.10"
 regex = "1.11"
 
 [dev-dependencies]

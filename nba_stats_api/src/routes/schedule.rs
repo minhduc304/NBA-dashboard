@@ -4,6 +4,7 @@ use axum::{
     response::Json,
 };
 use chrono::Timelike;
+use chrono_tz::America::New_York;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePool;
 use crate::db;
@@ -113,8 +114,11 @@ fn parse_game_time(time_str: &str) -> Option<(u32, u32)> {
 }
 
 /// Check if a game has started based on its date and time
+/// Game times are in ET (Eastern Time), so we convert current time to ET for comparison
 fn has_game_started(game_date: &str, game_time: &Option<String>) -> bool {
-    let now = chrono::Local::now();
+    // Get current time in ET (Eastern Time) since NBA game times are in ET
+    let now_utc = chrono::Utc::now();
+    let now_et = now_utc.with_timezone(&New_York);
 
     // Parse game date
     let parsed_date = chrono::NaiveDate::parse_from_str(game_date, "%Y-%m-%d");
@@ -123,18 +127,18 @@ fn has_game_started(game_date: &str, game_time: &Option<String>) -> bool {
         Err(_) => return false, // Can't parse, assume not started
     };
 
-    // If game is tomorrow, it hasn't started
-    let today = now.date_naive();
-    if game_date_parsed > today {
-        return false;
+    // Compare dates in ET
+    let today_et = now_et.date_naive();
+    if game_date_parsed > today_et {
+        return false; // Game is in the future
     }
 
-    // If game is before today, it has started (and finished)
-    if game_date_parsed < today {
+    // If game is before today (in ET), it has started (and finished)
+    if game_date_parsed < today_et {
         return true;
     }
 
-    // Game is today - check the time
+    // Game is today (in ET) - check the time
     let time_str = match game_time {
         Some(t) => t,
         None => return false, // No time info, assume not started
@@ -150,13 +154,13 @@ fn has_game_started(game_date: &str, game_time: &Option<String>) -> bool {
         None => return false, // Can't parse time, assume not started
     };
 
-    // Compare current time with game time (both in local/EST)
-    let current_hour = now.hour();
-    let current_minute = now.minute();
+    // Compare current ET time with game time (both in ET now)
+    let current_hour_et = now_et.hour();
+    let current_minute_et = now_et.minute();
 
-    if current_hour > game_hour {
+    if current_hour_et > game_hour {
         return true;
-    } else if current_hour == game_hour && current_minute >= game_minute {
+    } else if current_hour_et == game_hour && current_minute_et >= game_minute {
         return true;
     }
 
