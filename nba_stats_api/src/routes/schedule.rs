@@ -144,8 +144,8 @@ fn has_game_started(game_date: &str, game_time: &Option<String>) -> bool {
         None => return false, // No time info, assume not started
     };
 
-    // Handle "TBD" or "Scheduled" - assume not started
-    if time_str == "TBD" || time_str == "Scheduled" {
+    // Handle "TBD", "Scheduled", or "12:00 AM" (placeholder time) - assume not started
+    if time_str == "TBD" || time_str == "Scheduled" || time_str == "12:00 AM" {
         return false;
     }
 
