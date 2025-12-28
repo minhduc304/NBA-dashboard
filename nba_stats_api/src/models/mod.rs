@@ -153,6 +153,8 @@ pub struct PlayerStats {
     pub assists: f32,
     pub rebounds: f32,
     pub threes_made: f32,
+    pub threes_attempted: Option<f32>,
+    pub fg_attempted: Option<f32>,
     pub steals: f32,
     pub blocks: f32,
     pub turnovers: f32,

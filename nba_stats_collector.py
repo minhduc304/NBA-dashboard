@@ -224,6 +224,8 @@ class NBAStatsCollector:
                 'assists': overall_stats.get('AST'),
                 'rebounds': overall_stats.get('REB'),
                 'threes_made': overall_stats.get('FG3M'),
+                'threes_attempted': overall_stats.get('FG3A'),
+                'fg_attempted': overall_stats.get('FGA'),
                 'steals': overall_stats.get('STL'),
                 'blocks': overall_stats.get('BLK'),
                 'turnovers': overall_stats.get('TOV'),
@@ -893,14 +895,16 @@ class NBAStatsCollector:
         cursor.execute('''
             INSERT OR REPLACE INTO player_stats (
                 player_id, player_name, season, team_id,
-                points, assists, rebounds, threes_made, steals, blocks, turnovers, fouls, ft_attempted,
+                points, assists, rebounds, threes_made, threes_attempted, fg_attempted,
+                steals, blocks, turnovers, fouls, ft_attempted,
                 pts_plus_ast, pts_plus_reb, ast_plus_reb, pts_plus_ast_plus_reb, steals_plus_blocks,
                 double_doubles, triple_doubles,
                 q1_points, q1_assists, q1_rebounds, first_half_points,
                 games_played, last_updated
             ) VALUES (
                 :player_id, :player_name, :season, :team_id,
-                :points, :assists, :rebounds, :threes_made, :steals, :blocks, :turnovers, :fouls, :ft_attempted,
+                :points, :assists, :rebounds, :threes_made, :threes_attempted, :fg_attempted,
+                :steals, :blocks, :turnovers, :fouls, :ft_attempted,
                 :pts_plus_ast, :pts_plus_reb, :ast_plus_reb, :pts_plus_ast_plus_reb, :steals_plus_blocks,
                 :double_doubles, :triple_doubles,
                 :q1_points, :q1_assists, :q1_rebounds, :first_half_points,

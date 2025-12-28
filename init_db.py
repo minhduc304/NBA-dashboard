@@ -49,6 +49,8 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
             assists REAL,
             rebounds REAL,
             threes_made REAL,
+            threes_attempted REAL,
+            fg_attempted REAL,
             steals REAL,
             blocks REAL,
             turnovers REAL,
