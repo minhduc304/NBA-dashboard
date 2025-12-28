@@ -173,7 +173,10 @@ pub async fn get_team_roster(pool: &SqlitePool, team_id: i64) -> Result<Vec<Rost
                ps.position,
                pi.injury_status,
                pi.injury_description,
-               (SELECT 1 FROM underdog_props WHERE full_name = ps.player_name LIMIT 1) IS NOT NULL as has_props
+               (SELECT 1 FROM underdog_props WHERE full_name = ps.player_name
+                OR full_name = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                    ps.player_name, 'ć', 'c'), 'č', 'c'), 'š', 's'), 'ž', 'z'), 'đ', 'd')
+                LIMIT 1) IS NOT NULL as has_props
            FROM player_stats ps
            LEFT JOIN player_injuries pi ON ps.player_id = pi.player_id
            WHERE ps.team_id = ?
@@ -248,13 +251,76 @@ pub async fn get_player_game_logs(pool: &SqlitePool, player_id: i64, limit: i64)
     .await
 }
 
-/// Get underdog props for a player by name (for tomorrow's games)
+/// Normalize a name by removing accents and special characters
+/// Helps match "Luka Dončić" with "Luka Doncic"
+fn normalize_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ć' | 'č' | 'ç' => 'c',
+            'ñ' => 'n',
+            'š' => 's',
+            'ž' => 'z',
+            'ý' | 'ÿ' => 'y',
+            'đ' => 'd',
+            'Á' | 'À' | 'Ä' | 'Â' | 'Ã' => 'A',
+            'É' | 'È' | 'Ë' | 'Ê' => 'E',
+            'Í' | 'Ì' | 'Ï' | 'Î' => 'I',
+            'Ó' | 'Ò' | 'Ö' | 'Ô' | 'Õ' => 'O',
+            'Ú' | 'Ù' | 'Ü' | 'Û' => 'U',
+            'Ć' | 'Č' | 'Ç' => 'C',
+            'Ñ' => 'N',
+            'Š' => 'S',
+            'Ž' => 'Z',
+            'Ý' | 'Ÿ' => 'Y',
+            'Đ' => 'D',
+            _ => c,
+        })
+        .collect()
+}
+
+/// Get underdog props for a player by name (for today's or tomorrow's games)
 /// Only returns the latest version of each line (by updated_at timestamp)
+/// Tries exact match first, then normalized name match for accented characters
 pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Vec<UnderdogProp>, sqlx::Error> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
         .format("%Y-%m-%d")
         .to_string();
 
+    // Try exact match first
+    let results = sqlx::query_as::<_, UnderdogProp>(
+        r#"SELECT id, full_name, team_name, opponent_name, stat_name, stat_value,
+                  choice, american_price, decimal_price, scheduled_at
+           FROM (
+               SELECT id, full_name, team_name, opponent_name, stat_name, stat_value,
+                      choice, american_price, decimal_price, scheduled_at,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY stat_name, choice
+                          ORDER BY updated_at DESC
+                      ) as rn
+               FROM underdog_props
+               WHERE full_name = ? AND DATE(scheduled_at) IN (?, ?)
+           )
+           WHERE rn = 1
+           ORDER BY stat_name, choice"#
+    )
+    .bind(player_name)
+    .bind(&today)
+    .bind(&tomorrow)
+    .fetch_all(pool)
+    .await?;
+
+    if !results.is_empty() {
+        return Ok(results);
+    }
+
+    // Try normalized name (strips accents: Dončić -> Doncic)
+    let normalized = normalize_name(player_name);
     sqlx::query_as::<_, UnderdogProp>(
         r#"SELECT id, full_name, team_name, opponent_name, stat_name, stat_value,
                   choice, american_price, decimal_price, scheduled_at
@@ -266,12 +332,13 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
                           ORDER BY updated_at DESC
                       ) as rn
                FROM underdog_props
-               WHERE full_name = ? AND DATE(scheduled_at) = ?
+               WHERE full_name = ? AND DATE(scheduled_at) IN (?, ?)
            )
            WHERE rn = 1
            ORDER BY stat_name, choice"#
     )
-    .bind(player_name)
+    .bind(&normalized)
+    .bind(&today)
     .bind(&tomorrow)
     .fetch_all(pool)
     .await

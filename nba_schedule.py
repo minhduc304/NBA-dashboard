@@ -113,12 +113,13 @@ def save_games_to_db(games: List[Dict], db_path: str = DB_PATH) -> int:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_id) DO UPDATE SET
                     game_time = excluded.game_time,
+                    game_status = excluded.game_status,
                     last_updated = excluded.last_updated
             """, (
                 game['gameId'],
                 game['gameDate'],
                 game['gameTime'],
-                'Scheduled',  # Default status
+                game['gameTime'],  # Use same time for status
                 home_team_id,
                 game['homeTeam']['name'],
                 game['homeTeam']['abbreviation'],
