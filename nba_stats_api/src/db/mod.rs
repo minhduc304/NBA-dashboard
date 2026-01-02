@@ -74,6 +74,88 @@ pub async fn get_assist_zones(pool: &SqlitePool, player_id: i64) -> Result<Vec<P
     .await
 }
 
+pub async fn get_assist_zones_with_team_defense(
+    pool: &SqlitePool,
+    player_id: i64,
+    opponent_team_id: i64
+) -> Result<crate::models::AssistZoneMatchupResponse, sqlx::Error> {
+    use crate::models::{AssistZoneMatchup, AssistZoneMatchupResponse};
+
+    // Get player name
+    let player_name: String = sqlx::query_scalar(
+        r#"SELECT player_name FROM player_stats WHERE player_id = ? LIMIT 1"#
+    )
+    .bind(player_id)
+    .fetch_one(pool)
+    .await?;
+
+    // Get opponent team name
+    let opponent_name: String = sqlx::query_scalar(
+        r#"SELECT full_name FROM teams WHERE team_id = ? LIMIT 1"#
+    )
+    .bind(opponent_team_id)
+    .fetch_one(pool)
+    .await?;
+
+    // Get player's assist zones
+    let player_zones = get_assist_zones(pool, player_id).await?;
+
+    // Calculate total assists
+    let total_assists: i64 = player_zones.iter().map(|z| z.assists).sum();
+
+    // Get opponent's defensive zones
+    let opponent_def_zones = get_defensive_zones(pool, opponent_team_id).await?;
+
+    // Get all team defensive zones to calculate rankings
+    let all_team_zones: Vec<(i64, String, f32)> = sqlx::query_as(
+        r#"SELECT team_id, zone_name, opp_fg_pct FROM team_defensive_zones ORDER BY zone_name, opp_fg_pct"#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Build zone matchups
+    let mut zones: Vec<AssistZoneMatchup> = Vec::new();
+
+    for player_zone in player_zones.iter() {
+        // Find opponent's defensive FG% for this zone
+        let opp_def = opponent_def_zones.iter()
+            .find(|z| z.zone_name == player_zone.zone_name);
+
+        let (opp_def_fg_pct, opp_def_rank, has_data) = if let Some(def_zone) = opp_def {
+            // Calculate ranking: count how many teams have lower FG% (better defense)
+            let rank = all_team_zones.iter()
+                .filter(|(_, zone, fg_pct)| zone == &player_zone.zone_name && fg_pct < &def_zone.opp_fg_pct)
+                .count() as i32 + 1;
+
+            (def_zone.opp_fg_pct, rank, true)
+        } else {
+            (0.0, 0, false)
+        };
+
+        let player_ast_pct = if total_assists > 0 {
+            (player_zone.assists as f32 / total_assists as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        zones.push(AssistZoneMatchup {
+            zone_name: player_zone.zone_name.clone(),
+            player_assists: player_zone.assists,
+            player_ast_pct,
+            opp_def_rank,
+            opp_def_fg_pct,
+            has_data,
+        });
+    }
+
+    Ok(AssistZoneMatchupResponse {
+        player_name,
+        opponent_name,
+        total_assists,
+        zones,
+    })
+}
+
 // Play type queries - return all play types for a player
 pub async fn get_player_playtypes(pool: &SqlitePool, player_id: i64) -> Result<Vec<PlayerPlayTypes>, sqlx::Error> {
     sqlx::query_as::<_, PlayerPlayTypes>(

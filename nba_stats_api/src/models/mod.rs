@@ -201,6 +201,26 @@ pub struct PlayerAssistZones {
     pub last_updated: String
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistZoneMatchup {
+    pub zone_name: String,
+    pub player_assists: i64,
+    pub player_ast_pct: f32,
+    pub opp_def_rank: i32,
+    pub opp_def_fg_pct: f32,
+    pub has_data: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistZoneMatchupResponse {
+    pub player_name: String,
+    pub opponent_name: String,
+    pub total_assists: i64,
+    pub zones: Vec<AssistZoneMatchup>,
+}
+
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct PlayerPlayTypes {
     pub player_id: i64,

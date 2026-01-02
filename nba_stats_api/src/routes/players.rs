@@ -211,3 +211,22 @@ pub async fn get_player_play_type_matchup(
         matchups,
     }))
 }
+
+// Query parameters for assist zone matchup
+#[derive(Deserialize)]
+pub struct AssistZoneMatchupQuery {
+    opponent_id: i64,
+}
+
+// GET /api/players/:id/assist-zone-matchup?opponent_id=123 - Get player's assist zone matchup vs opponent
+pub async fn get_player_assist_zone_matchup(
+    State(pool): State<SqlitePool>,
+    Path(player_id): Path<i64>,
+    Query(params): Query<AssistZoneMatchupQuery>,
+) -> Result<Json<crate::models::AssistZoneMatchupResponse>, StatusCode> {
+    let matchup = db::get_assist_zones_with_team_defense(&pool, player_id, params.opponent_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(matchup))
+}
