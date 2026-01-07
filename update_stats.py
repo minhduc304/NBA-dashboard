@@ -203,7 +203,7 @@ def main():
 
                 # Player has new games to analyze
                 try:
-                    # Pass delay to control play-by-play API rate limiting
+                    # Pass base_delay to control play-by-play API rate limiting
                     result = collector.collect_player_assist_zones(player_name, delay=args.delay)
                     if result:
                         success_count += 1

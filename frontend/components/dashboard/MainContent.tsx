@@ -196,7 +196,11 @@ export function MainContent({ player }: MainContentProps) {
       }
 
       try {
-        const logs = await fetchPlayerGameLogs(playerId, gamesCount);
+        // Map stat category to backend column name
+        const statColumn = STAT_TO_API_FIELD[activeStat];
+        const statCategoryParam = typeof statColumn === 'string' ? statColumn : statColumn[0];
+
+        const logs = await fetchPlayerGameLogs(playerId, gamesCount, statCategoryParam);
         setGameLogs(logs);
       } catch (err) {
         console.error('Failed to fetch game logs:', err);
@@ -208,7 +212,7 @@ export function MainContent({ player }: MainContentProps) {
     };
 
     loadGameLogs();
-  }, [player?.id, gamesCount]);
+  }, [player?.id, gamesCount, activeStat]); // Re-fetch when stat category changes to get relevant DNP data
 
   // Transform game logs to chart data based on selected stat
   const chartData: ChartDataPoint[] = useMemo(() => {

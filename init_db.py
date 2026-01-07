@@ -190,6 +190,8 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
             fta INTEGER,
             ft_pct REAL,
             tov INTEGER,
+            oreb INTEGER,
+            dreb INTEGER,
             plus_minus INTEGER,
             PRIMARY KEY (game_id, player_id),
             FOREIGN KEY (game_id) REFERENCES games(game_id),
@@ -358,7 +360,7 @@ def init_database(db_path: str = 'nba_stats.db') -> None:
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_player ON underdog_props(full_name)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_stat ON underdog_props(stat_name)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_scheduled ON underdog_props(scheduled_at)')
-
+    
     conn.commit()
     conn.close()
 

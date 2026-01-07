@@ -320,7 +320,9 @@ pub async fn get_player_game_logs(pool: &SqlitePool, player_id: i64, limit: i64)
                            ELSE s.away_score - s.home_score
                        END
                    ELSE NULL
-               END as game_margin
+               END as game_margin,
+               pgl.oreb,
+               pgl.dreb
            FROM player_game_logs pgl
            LEFT JOIN schedule s ON pgl.game_id = s.game_id
            WHERE pgl.player_id = ?
@@ -461,5 +463,58 @@ pub async fn get_team_defensive_play_type_ranks(pool: &SqlitePool) -> Result<std
     }
 
     Ok(ranks)
+}
+
+/// Get DNP (Did Not Play) players for a specific game and team
+/// Returns top 2 players who were on the roster but didn't play, sorted by season average
+pub async fn get_dnp_players_for_game(
+    pool: &SqlitePool,
+    game_id: &str,
+    team_id: i64,
+    stat_column: &str,
+) -> Result<Vec<crate::models::DnpPlayer>, sqlx::Error> {
+    // Validate stat_column to prevent SQL injection
+    let valid_stats = ["points", "assists", "rebounds", "threes_made", "threes_attempted", "fg_attempted",
+                       "pts_plus_ast", "pts_plus_reb", "ast_plus_reb", "pts_plus_ast_plus_reb",
+                       "steals", "blocks", "steals_plus_blocks", "turnovers"];
+
+    if !valid_stats.contains(&stat_column) {
+        // Return empty vec for invalid stat
+        return Ok(vec![]);
+    }
+
+    // Build the query dynamically with the stat column
+    let query = format!(
+        r#"
+        SELECT ps.player_id, ps.player_name, ps.position,
+               COALESCE(ps.{}, 0.0) as season_avg
+        FROM player_stats ps
+        WHERE ps.team_id = ?
+          AND ps.player_id NOT IN (
+              SELECT CAST(player_id AS INTEGER)
+              FROM player_game_logs
+              WHERE game_id = ?
+          )
+        ORDER BY season_avg DESC
+        LIMIT 2
+        "#,
+        stat_column
+    );
+
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, f32)>(&query)
+        .bind(team_id)
+        .bind(game_id)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(player_id, player_name, position, season_avg)| crate::models::DnpPlayer {
+            player_id,
+            player_name,
+            position,
+            season_avg,
+        })
+        .collect())
 }
 

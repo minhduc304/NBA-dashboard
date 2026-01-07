@@ -104,6 +104,40 @@ function CustomTooltip({ active, payload, lineValue }: CustomTooltipProps) {
           )}
         </div>
       )}
+
+      {/* Rebound Breakdown */}
+      {(data.oreb !== null || data.dreb !== null) && (
+        <div className="flex gap-3 text-xs text-muted-foreground border-t border-border pt-2 mt-2">
+          {data.oreb !== null && (
+            <span>OREB: {data.oreb}</span>
+          )}
+          {data.dreb !== null && (
+            <span>DREB: {data.dreb}</span>
+          )}
+          {data.oreb !== null && data.dreb !== null && (
+            <span className="text-muted-foreground/60">Total: {data.oreb + data.dreb}</span>
+          )}
+        </div>
+      )}
+
+      {/* DNP Players */}
+      {data.dnpPlayers && data.dnpPlayers.length > 0 && (
+        <div className="border-t border-border pt-2 mt-2">
+          <div className="text-xs font-semibold text-muted-foreground mb-1">DNP (Teammates)</div>
+          <div className="space-y-1">
+            {data.dnpPlayers.map((dnp, idx) => (
+              <div key={idx} className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {dnp.playerName}
+                </span>
+                <span className="font-mono font-semibold text-amber-500">
+                  {dnp.seasonAvg.toFixed(1)} avg
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

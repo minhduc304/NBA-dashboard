@@ -123,18 +123,21 @@ pub struct GameLogsQuery {
     /// Matches the "games" slider in the frontend UI
     #[serde(default = "default_limit")]
     limit: i64,
+    /// Stat category for DNP players (points, assists, rebounds, etc.)
+    /// Used to determine which stat to show for DNP players
+    stat_category: Option<String>,
 }
 
 fn default_limit() -> i64 {
     20
 }
 
-// GET /api/players/:id/game-logs - Get player's game-by-game stats
+// GET /api/players/:id/game-logs - Get player's game-by-game stats with DNP players
 pub async fn get_player_game_logs(
     State(pool): State<SqlitePool>,
     Path(player_id): Path<i64>,
     Query(params): Query<GameLogsQuery>,
-) -> Result<Json<Vec<crate::models::PlayerGameLog>>, StatusCode> {
+) -> Result<Json<Vec<crate::models::GameLogWithDnp>>, StatusCode> {
     // Cap limit at 82 (max games in a season)
     let limit = params.limit.min(82);
 
@@ -142,7 +145,67 @@ pub async fn get_player_game_logs(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(game_logs))
+    // Get the player's current team from player_stats
+    let player_team_id: Option<i64> = sqlx::query_scalar(
+        r#"SELECT team_id FROM player_stats WHERE player_id = ?"#
+    )
+    .bind(player_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .flatten();
+
+    // Get stat column name for DNP queries
+    let stat_column = params.stat_category.as_deref().unwrap_or("points");
+
+    // For each game, get DNP players from the SAME team (teammates)
+    // DNP teammates affect playing time and usage for the player
+    let mut logs_with_dnp = Vec::new();
+
+    for game_log in game_logs {
+        let dnp_players = if let Some(team_id) = player_team_id {
+            db::get_dnp_players_for_game(&pool, &game_log.game_id, team_id, stat_column)
+                .await
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        logs_with_dnp.push(crate::models::GameLogWithDnp {
+            game_log,
+            dnp_players,
+        });
+    }
+
+    Ok(Json(logs_with_dnp))
+}
+
+// Helper to get opponent team ID from a game
+async fn get_opponent_team_id(
+    pool: &SqlitePool,
+    game_id: &str,
+    player_team_id: Option<i64>,
+) -> Result<Option<i64>, sqlx::Error> {
+    if player_team_id.is_none() {
+        return Ok(None);
+    }
+
+    let player_team = player_team_id.unwrap();
+
+    let result: Option<(i64, i64)> = sqlx::query_as(
+        r#"SELECT home_team_id, away_team_id FROM schedule WHERE game_id = ?"#
+    )
+    .bind(game_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(result.and_then(|(home_id, away_id)| {
+        if home_id == player_team {
+            Some(away_id)
+        } else {
+            Some(home_id)
+        }
+    }))
 }
 
 // Query parameters for play type matchup

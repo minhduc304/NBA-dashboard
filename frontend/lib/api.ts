@@ -95,14 +95,21 @@ export interface ApiRosterResponse {
   count: number;
 }
 
+export interface DnpPlayer {
+  playerId: number;
+  playerName: string;
+  position: string | null;
+  seasonAvg: number;
+}
+
 export interface ApiGameLog {
   gameId: string;
   playerId: string;
-  teamId: number | null;
-  season: string | null;
-  gameDate: string | null;
-  matchup: string | null;
-  wl: string | null;
+  teamId: number;
+  season: string;
+  gameDate: string;
+  matchup: string;
+  wl: string;
   min: number | null;
   pts: number | null;
   reb: number | null;
@@ -116,7 +123,10 @@ export interface ApiGameLog {
   ftm: number | null;
   fta: number | null;
   tov: number | null;
-  gameMargin: number | null;
+  gameMargin: number;
+  oreb: number | null;
+  dreb: number | null;
+  dnpPlayers: DnpPlayer[];
 }
 
 // Prop line for a single stat
@@ -267,12 +277,20 @@ export async function fetchUpcomingRosters(): Promise<ApiRosterResponse> {
   return response.json();
 }
 
-/** 
- * Fetch game logs for a player 
- */ 
-export async function fetchPlayerGameLogs(playerId: number, limit?: number): Promise<ApiGameLog[]> {
+/**
+ * Fetch game logs for a player with DNP information
+ * @param playerId - Player ID to fetch logs for
+ * @param limit - Number of games to fetch
+ * @param statCategory - Stat category for DNP players (e.g., 'points', 'assists', 'rebounds')
+ */
+export async function fetchPlayerGameLogs(
+  playerId: number,
+  limit?: number,
+  statCategory?: string
+): Promise<ApiGameLog[]> {
   const params = new URLSearchParams();
   if (limit) params.append('limit', limit.toString());
+  if (statCategory) params.append('stat_category', statCategory);
   const url = `${API_BASE_URL}/api/players/${playerId}/game-logs${params.toString() ? '?' + params.toString() : ''}`
 
   const response = await fetch(url);

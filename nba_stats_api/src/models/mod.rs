@@ -267,6 +267,16 @@ pub struct TeamDefensivePlayTypes {
     pub last_updated: String,
 }
 
+// DNP (Did Not Play) player info
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnpPlayer {
+    pub player_id: i64,
+    pub player_name: String,
+    pub position: Option<String>,
+    pub season_avg: f32,  // Season average for the relevant stat
+}
+
 // Player game log for individual game stats
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -292,6 +302,17 @@ pub struct PlayerGameLog {
     pub fta: Option<i32>,
     pub tov: Option<i32>,
     pub game_margin: Option<i32>,
+    pub oreb: Option<i32>,
+    pub dreb: Option<i32>,
+}
+
+// Game log with DNP players included
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameLogWithDnp {
+    #[serde(flatten)]
+    pub game_log: PlayerGameLog,
+    pub dnp_players: Vec<DnpPlayer>,
 }
 
 // Underdog prop line from database

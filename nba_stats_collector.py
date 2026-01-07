@@ -1831,95 +1831,6 @@ class NBAStatsCollector:
 
         return {'success': True, 'status': 'collected', 'games_processed': len(new_games)}
 
-
-    def backfill_player_shooting_zones(self, delay: float = 0.6, skip_existing: bool = True):
-        """
-        Add shooting zones to existing players who don't have zone data yet.
-
-        This is useful for:
-        - Adding shooting zones to players collected before this feature existed
-        - Resuming after rate limiting errors
-        - Backfilling missing data
-
-        Args:
-            delay: Delay between API calls to avoid rate limiting (seconds)
-            skip_existing: If True, skip players who already have shooting zone data (default: True)
-        """
-        print(f"Starting shooting zone backfill for {self.SEASON} season...")
-
-        # Get all players from database
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT player_id, player_name FROM player_stats WHERE season = ?", (self.SEASON,))
-        all_players = cursor.fetchall()
-
-        if skip_existing:
-            # Get players who already have shooting zone data
-            cursor.execute("""
-                SELECT DISTINCT player_id
-                FROM player_shooting_zones
-                WHERE season = ?
-            """, (self.SEASON,))
-            players_with_zones = {row[0] for row in cursor.fetchall()}
-
-            # Filter to only players missing zones
-            players_to_update = [(pid, name) for pid, name in all_players if pid not in players_with_zones]
-
-            print(f"Found {len(all_players)} players in database")
-            print(f"  {len(players_with_zones)} already have shooting zones")
-            print(f"  {len(players_to_update)} missing shooting zones\n")
-        else:
-            players_to_update = all_players
-            print(f"Found {len(all_players)} players in database")
-            print(f"Collecting zones for all players (skip_existing=False)\n")
-
-        conn.close()
-
-        if not players_to_update:
-            print("All players already have shooting zone data!")
-            return
-
-        total = len(players_to_update)
-        success_count = 0
-        error_count = 0
-        skipped_count = 0
-
-        for i, (player_id, player_name) in enumerate(players_to_update, 1):
-            # Check for rate limiting - stop early if detected
-            if self._rate_limited:
-                print(f"\n{'!' * 60}")
-                print(f"STOPPED: Rate limiting detected after {i-1} players.")
-                print(f"Try again later with increased delay (--delay 2.0)")
-                print(f"Progress saved: {success_count} zones added to database.")
-                print(f"{'!' * 60}")
-                break
-
-            print(f"[{i}/{total}] {player_name}...", end=" ")
-
-            try:
-                zones = self._get_player_shooting_zones(player_id)
-
-                if zones:
-                    self.save_player_shooting_zones(player_id, zones)
-                    success_count += 1
-                    print(f"✓ Saved {len(zones)} zones")
-                else:
-                    skipped_count += 1
-                    print(f"○ No zone data")
-
-            except Exception as e:
-                error_count += 1
-                print(f"✗ Error: {e}")
-
-            # Rate limiting
-            if i < total:
-                time.sleep(delay)
-
-        print(f"\n{'=' * 60}")
-        print(f"Backfill complete!")
-        print(f"Success: {success_count}, Skipped: {skipped_count}, Errors: {error_count}")
-        print(f"{'=' * 60}")
-
     def get_player_from_database(self, player_id: int) -> Optional[Dict]:
         """
         Get a player's current stats from the database.
@@ -2048,7 +1959,7 @@ class NBAStatsCollector:
         print(f"Starting update for {self.SEASON} season...")
 
         if add_new_only:
-            # ADD NEW ONLY MODE: Only add players not in database
+            # ADD NEW ONLY: Only add players not in database
             # Get all active players
             all_players = players.get_active_players()
 
@@ -2385,6 +2296,8 @@ class NBAStatsCollector:
             "FG3M", "FG3A", "FG3_PCT",
             "FTM", "FTA", "FT_PCT",
             "TOV",
+            "OREB",
+            "DREB",
         ]
 
         try:
@@ -2430,6 +2343,8 @@ class NBAStatsCollector:
                 'FTA': 'fta',
                 'FT_PCT': 'ft_pct',
                 'TOV': 'tov',
+                'OREB': 'oreb',
+                'DREB': 'dreb',
             }
             df = df.rename(columns=column_mapping)
 
@@ -2447,8 +2362,8 @@ class NBAStatsCollector:
                     game_id, player_id, team_id, season, game_date, matchup,
                     min, pts, reb, ast, stl, blk,
                     fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
-                    ftm, fta, ft_pct, tov
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ftm, fta, ft_pct, tov, oreb, dreb
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
 
             for _, row in df.iterrows():
@@ -2475,6 +2390,8 @@ class NBAStatsCollector:
                     row['fta'],
                     row['ft_pct'],
                     row['tov'],
+                    row.get('oreb', None),
+                    row.get('dreb', None),
                 ))
 
             conn.commit()

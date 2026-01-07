@@ -68,6 +68,14 @@ export interface GameMatchup {
   date: string;
 }
 
+// DNP Player interface
+export interface DnpPlayer {
+  playerId: number;
+  playerName: string;
+  position: string | null;
+  seasonAvg: number;
+}
+
 // Chart data point interface
 export interface ChartDataPoint {
   date: string;
@@ -86,6 +94,11 @@ export interface ChartDataPoint {
   fg3a: number | null;
   ftm: number | null;
   fta: number | null;
+  // Rebound breakdown
+  oreb: number | null;
+  dreb: number | null;
+  // DNP players from opponent team
+  dnpPlayers: DnpPlayer[];
 }
 
 // Player stats interface for display
@@ -232,6 +245,11 @@ export function transformGameLogsToChartData(
           fg3a: log.fg3a,
           ftm: log.ftm,
           fta: log.fta,
+          // Rebound breakdown
+          oreb: log.oreb,
+          dreb: log.dreb,
+          // DNP players
+          dnpPlayers: log.dnpPlayers || [],
         };
       });
 }
