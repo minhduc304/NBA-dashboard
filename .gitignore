@@ -4,3 +4,5 @@ nba_stats.db
 __pycache__
 underdog_config.json
 .env
+nba_stats_backup.db
+/logs

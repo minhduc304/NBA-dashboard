@@ -17,6 +17,13 @@ Usage:
     # ONLY collect game scores (single API call, updates schedule with final scores)
     python update_stats.py --collect-game-scores
 
+    # Collect HISTORICAL game logs for ML training (one API call per season)
+    python update_stats.py --collect-historical 2024-25
+    python update_stats.py --collect-historical 2024-25 2023-24 2022-23
+
+    # Collect current injury report (NBA.com + ESPN fallback, preserves history)
+    python update_stats.py --collect-injuries
+
     # Update with assist zones (incremental, only processes new games)
     python update_stats.py --collect-assist-zones
 
@@ -54,7 +61,14 @@ Usage:
 import argparse
 import time
 import sqlite3
-from nba_stats_collector import NBAStatsCollector
+import sys
+import os
+
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from src.nba_stats_collector import NBAStatsCollector
 
 
 def main():
@@ -86,6 +100,14 @@ def main():
                        help='Collect position data for all players from team rosters (30 API calls)')
     parser.add_argument('--collect-game-scores', action='store_true',
                        help='Collect final scores for completed games (single API call, updates schedule table)')
+    parser.add_argument('--collect-historical', type=str, nargs='+', metavar='SEASON',
+                       help='Collect historical game logs for specified seasons (e.g., --collect-historical 2024-25 2023-24)')
+    parser.add_argument('--collect-pace', type=str, nargs='*', metavar='SEASON',
+                       help='Collect team pace data (e.g., --collect-pace or --collect-pace 2024-25 2023-24)')
+    parser.add_argument('--collect-injuries', action='store_true',
+                       help='Collect current injury report (NBA.com + ESPN fallback, preserves history)')
+    parser.add_argument('--compute-rolling-stats', action='store_true',
+                       help='Compute rolling statistics (L5, L10, L20 averages) for ML features')
 
     args = parser.parse_args()
 
@@ -121,9 +143,9 @@ def main():
 
     else:
         # Check if we should update players or just collect specific data types
-        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types, positions, game scores)
+        # Skip player updates if we're ONLY collecting specific data (game logs, team defense, play types, positions, game scores, historical, pace, injuries, rolling stats)
         only_collecting_specific = (
-            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types or args.collect_positions or args.collect_game_scores) and
+            (args.collect_game_logs or args.collect_team_defense or args.collect_play_types or args.collect_team_play_types or args.collect_positions or args.collect_game_scores or args.collect_historical or args.collect_pace is not None or args.collect_injuries or args.compute_rolling_stats) and
             not args.collect_assist_zones and
             not args.include_new and
             not args.add_new_only
@@ -346,6 +368,70 @@ def main():
             print("(Single API call, updates schedule table with home/away scores)\n")
 
             collector.collect_game_scores()
+
+        # Collect historical game logs if requested
+        if args.collect_historical:
+            print("\n" + "=" * 60)
+            print("HISTORICAL GAME LOGS COLLECTION")
+            print("=" * 60)
+            print(f"Collecting game logs for {len(args.collect_historical)} historical season(s)...")
+            print("(One API call per season, incremental - skips existing data)\n")
+
+            total_inserted = 0
+            total_skipped = 0
+
+            for season in args.collect_historical:
+                result = collector.collect_historical_game_logs(season)
+                total_inserted += result.get('inserted', 0)
+                total_skipped += result.get('skipped', 0)
+
+                # Small delay between seasons to avoid rate limiting
+                if season != args.collect_historical[-1]:
+                    print(f"\nWaiting 5 seconds before next season...")
+                    time.sleep(5)
+
+            print(f"\n{'=' * 60}")
+            print("HISTORICAL COLLECTION COMPLETE")
+            print(f"{'=' * 60}")
+            print(f"Total inserted: {total_inserted}")
+            print(f"Total skipped: {total_skipped}")
+
+        # Collect team pace if requested
+        if args.collect_pace is not None:
+            print("\n" + "=" * 60)
+            print("TEAM PACE COLLECTION")
+            print("=" * 60)
+
+            if args.collect_pace:  # Specific seasons provided
+                seasons = args.collect_pace
+                print(f"Collecting pace for seasons: {', '.join(seasons)}")
+                collector.collect_all_team_pace(seasons=seasons)
+            else:  # No seasons provided, use current
+                print("Collecting pace for current season...")
+                collector.collect_team_pace()
+
+        # Collect injuries if requested
+        if args.collect_injuries:
+            print("\n" + "=" * 60)
+            print("INJURY REPORT COLLECTION")
+            print("=" * 60)
+            print("Collecting current injury report...")
+            print("(NBA.com primary, ESPN fallback, preserves history)\n")
+
+            collector.collect_injuries()
+
+        # Compute rolling stats if requested
+        if args.compute_rolling_stats:
+            print("\n" + "=" * 60)
+            print("ROLLING STATISTICS COMPUTATION")
+            print("=" * 60)
+            print("Computing rolling statistics (L5, L10, L20 averages)...")
+            print("(No API calls, uses existing game logs)\n")
+
+            from rolling_stats import compute_rolling_stats, get_rolling_stats_summary
+            result = compute_rolling_stats(collector.db_path)
+            print(f"\nComplete: {result['rows_inserted']:,} rows for {result['players']} players")
+            get_rolling_stats_summary(collector.db_path)
 
 
 if __name__ == "__main__":

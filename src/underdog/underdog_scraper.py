@@ -195,7 +195,7 @@ class UnderdogScraper:
 
         return df
 
-    def scrape(self, db_path='nba_stats.db'):
+    def scrape(self, db_path='data/nba_stats.db'):
         import sqlite3
         from datetime import datetime, timezone
 

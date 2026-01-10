@@ -16,7 +16,7 @@ collector.collect_all_active_players()
 from nba_stats_collector import NBAStatsCollector
 
 collector = NBAStatsCollector()
-collector.collect_and_save_player("Lebron James")
+collector.update_player_stats("LeBron James")
 ```
 
 ### Update Player Stats (Recommended for Daily Updates)

@@ -34,7 +34,7 @@ class NBAStatsCollector:
 
     SEASON = '2025-26'
 
-    def __init__(self, db_path: str = 'nba_stats.db'):
+    def __init__(self, db_path: str = 'data/nba_stats.db'):
         """Initialize the collector with a database path."""
         self.db_path = db_path
         self._init_database()
@@ -44,7 +44,7 @@ class NBAStatsCollector:
 
     def _init_database(self):
         """Initialize the database schema using init_db module."""
-        from init_db import init_database
+        from .init_db import init_database
         init_database(self.db_path)
 
     def get_rostered_player_ids(self) -> Set[int]:
@@ -1041,59 +1041,6 @@ class NBAStatsCollector:
         conn.commit()
         conn.close()
 
-    def collect_and_save_player(self, player_name: str) -> bool:
-        """
-        Collect stats for a player and save to database.
-
-        Args:
-            player_name: Full name of the player
-
-        Returns:
-            True if successful, False otherwise
-        """
-        stats = self.collect_player_stats(player_name)
-        if stats:
-            self.save_to_database(stats)
-            return True
-        return False
-
-    def collect_and_save_team_defense(self, team_name: str) -> bool:
-        """
-        Collect defensive shooting zone stats for a team and save to database.
-
-        Args:
-            team_name: Full name of the team (e.g., "Phoenix Suns")
-
-        Returns:
-            True if successful, False otherwise
-        """
-        # Find team
-        all_teams = teams.get_teams()
-        team_dict = [t for t in all_teams if t['full_name'] == team_name or t['nickname'] == team_name]
-
-        if not team_dict:
-            print(f"Team '{team_name}' not found")
-            return False
-
-        team_id = team_dict[0]['id']
-        team_full_name = team_dict[0]['full_name']
-
-        print(f"Collecting defensive zones for {team_full_name} (ID: {team_id})...")
-
-        try:
-            zones = self._get_team_defensive_zones(team_id)
-            if zones:
-                self.save_team_defensive_zones(team_id, zones)
-                print(f"Saved {len(zones)} defensive zones for {team_full_name}")
-                return True
-            else:
-                print(f"No defensive zone data found for {team_full_name}")
-                return False
-
-        except Exception as e:
-            print(f"Error collecting defensive zones for {team_full_name}: {e}")
-            return False
-
     def collect_all_team_defenses(self, delay: float = 0.6):
         """
         Collect defensive shooting zone stats for all NBA teams.
@@ -1189,6 +1136,126 @@ class NBAStatsCollector:
         print(f"Collection complete!")
         print(f"Collected: {collected_count}, Skipped: {skipped_count}, Errors: {error_count}")
         print(f"{'=' * 60}")
+
+    def collect_team_pace(self, season: str = None) -> Dict[str, int]:
+        """
+        Collect pace and rating data for all NBA teams.
+
+        This data is useful for ML features as it indicates:
+        - Pace: How many possessions/opportunities per game
+        - Off Rating: Team's offensive efficiency
+        - Def Rating: Team's defensive efficiency
+
+        Args:
+            season: Season string (e.g., '2024-25'). Defaults to current season.
+
+        Returns:
+            Dict with counts: {'collected': X, 'errors': Y}
+        """
+        from nba_api.stats.endpoints import leaguedashteamstats
+
+        season = season or self.SEASON
+
+        print(f"\n{'=' * 60}")
+        print(f"TEAM PACE COLLECTION: {season} Season")
+        print(f"{'=' * 60}")
+
+        try:
+            # Single API call gets all teams
+            stats = leaguedashteamstats.LeagueDashTeamStats(
+                season=season,
+                measure_type_detailed_defense='Advanced',
+                per_mode_detailed='PerGame',
+                timeout=60
+            )
+
+            df = stats.get_data_frames()[0]
+
+            if df.empty:
+                print("No data returned from API")
+                return {'collected': 0, 'errors': 1}
+
+            # Filter to NBA teams only (exclude G-League, WNBA)
+            # NBA team IDs are in the 1610612700-1610612799 range
+            df = df[df['TEAM_ID'].between(1610612700, 1610612799)]
+
+            print(f"Found {len(df)} NBA teams")
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            collected = 0
+            for _, row in df.iterrows():
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO team_pace (
+                            team_id, season, pace, off_rating, def_rating, net_rating,
+                            games_played, wins, losses
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row['TEAM_ID'],
+                        season,
+                        row['PACE'],
+                        row['OFF_RATING'],
+                        row['DEF_RATING'],
+                        row['NET_RATING'],
+                        row['GP'],
+                        row['W'],
+                        row['L']
+                    ))
+                    collected += 1
+                except Exception as e:
+                    print(f"  Error saving {row['TEAM_NAME']}: {e}")
+
+            conn.commit()
+            conn.close()
+
+            print(f"\nCollected pace data for {collected} teams")
+
+            # Show sample
+            print(f"\nSample data:")
+            print(df[['TEAM_NAME', 'GP', 'PACE', 'OFF_RATING', 'DEF_RATING']].head(10).to_string())
+
+            return {'collected': collected, 'errors': 0}
+
+        except Exception as e:
+            print(f"Error collecting team pace: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'collected': 0, 'errors': 1}
+
+    def collect_all_team_pace(self, seasons: list = None) -> Dict[str, int]:
+        """
+        Collect pace data for multiple seasons.
+
+        Args:
+            seasons: List of seasons (e.g., ['2024-25', '2023-24']).
+                    Defaults to current season only.
+
+        Returns:
+            Dict with total counts
+        """
+        seasons = seasons or [self.SEASON]
+
+        print(f"Collecting pace data for {len(seasons)} season(s)...")
+
+        total_collected = 0
+        total_errors = 0
+
+        for season in seasons:
+            result = self.collect_team_pace(season)
+            total_collected += result['collected']
+            total_errors += result['errors']
+
+            if season != seasons[-1]:
+                time.sleep(2)  # Brief delay between seasons
+
+        print(f"\n{'=' * 60}")
+        print(f"PACE COLLECTION COMPLETE")
+        print(f"Total collected: {total_collected}, Errors: {total_errors}")
+        print(f"{'=' * 60}")
+
+        return {'collected': total_collected, 'errors': total_errors}
 
     def collect_player_play_types(self, player_name: str, delay: float = 0.6, force: bool = False) -> bool:
         """
@@ -2070,7 +2137,7 @@ class NBAStatsCollector:
             updated_count = 0
             error_count = 0
 
-            for i, (player_name, old_gp, new_games) in enumerate(players_needing_update, 1):
+            for i, (player_name, _old_gp, new_games) in enumerate(players_needing_update, 1):
                 # Check for rate limiting - stop early if detected
                 if self._rate_limited:
                     print(f"\n{'!' * 60}")
@@ -2296,6 +2363,7 @@ class NBAStatsCollector:
             "FG3M", "FG3A", "FG3_PCT",
             "FTM", "FTA", "FT_PCT",
             "TOV",
+            "PF",
             "OREB",
             "DREB",
         ]
@@ -2343,6 +2411,7 @@ class NBAStatsCollector:
                 'FTA': 'fta',
                 'FT_PCT': 'ft_pct',
                 'TOV': 'tov',
+                'PF': 'pf',
                 'OREB': 'oreb',
                 'DREB': 'dreb',
             }
@@ -2362,8 +2431,8 @@ class NBAStatsCollector:
                     game_id, player_id, team_id, season, game_date, matchup,
                     min, pts, reb, ast, stl, blk,
                     fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
-                    ftm, fta, ft_pct, tov, oreb, dreb
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ftm, fta, ft_pct, tov, pf, oreb, dreb
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
 
             for _, row in df.iterrows():
@@ -2390,6 +2459,7 @@ class NBAStatsCollector:
                     row['fta'],
                     row['ft_pct'],
                     row['tov'],
+                    row.get('pf', None),
                     row.get('oreb', None),
                     row.get('dreb', None),
                 ))
@@ -2400,14 +2470,26 @@ class NBAStatsCollector:
             cursor.execute("SELECT COUNT(*) FROM player_game_logs")
             count_after = cursor.fetchone()[0]
 
-            conn.close()
-
             inserted = count_after - count_before
             skipped = len(df) - inserted
+
+            # Update pf for existing records that have NULL pf values
+            print("Updating pf values for existing records...")
+            update_sql = '''
+                UPDATE player_game_logs SET pf = ? WHERE game_id = ? AND player_id = ? AND pf IS NULL
+            '''
+            updated_count = 0
+            for _, row in df.iterrows():
+                if row.get('pf') is not None:
+                    cursor.execute(update_sql, (row['pf'], row['game_id'], row['player_id']))
+                    updated_count += cursor.rowcount
+            conn.commit()
+            conn.close()
 
             print(f"\n{'=' * 60}")
             print(f"Game logs collection complete!")
             print(f"Inserted: {inserted} new rows, Skipped: {skipped} existing rows")
+            print(f"Updated pf for: {updated_count} existing rows")
             print(f"Total in database: {count_after}")
             print(f"{'=' * 60}")
 
@@ -2415,6 +2497,195 @@ class NBAStatsCollector:
 
         except Exception as e:
             print(f"Error collecting game logs: {e}")
+            return {'inserted': 0, 'skipped': 0}
+
+    def collect_historical_game_logs(self, season: str) -> Dict[str, int]:
+        """
+        Collect game logs for a historical season.
+
+        Makes a single API call to fetch all player game logs for the specified
+        season, then saves them to the database. Uses INSERT OR IGNORE to skip
+        already-collected games.
+
+        Args:
+            season: Season string in format 'YYYY-YY' (e.g., '2024-25', '2023-24')
+
+        Returns:
+            Dict with 'inserted' (new rows) and 'skipped' (existing rows) counts
+
+        Example:
+            collector.collect_historical_game_logs('2024-25')
+            collector.collect_historical_game_logs('2023-24')
+        """
+        print(f"\n{'=' * 60}")
+        print(f"HISTORICAL GAME LOGS: {season} Season")
+        print(f"{'=' * 60}")
+        print(f"Fetching all player game logs for {season} season...")
+
+        # Columns to collect (matching player_game_logs table schema)
+        COLUMNS = [
+            "SEASON_YEAR",
+            "PLAYER_ID",
+            "TEAM_ID",
+            "GAME_ID",
+            "GAME_DATE",
+            "MATCHUP",
+            "WL",
+            "MIN",
+            "PTS",
+            "REB",
+            "AST",
+            "STL",
+            "BLK",
+            "FGM", "FGA", "FG_PCT",
+            "FG3M", "FG3A", "FG3_PCT",
+            "FTM", "FTA", "FT_PCT",
+            "TOV",
+            "PF",
+            "PLUS_MINUS",
+            "OREB",
+            "DREB",
+        ]
+
+        try:
+            # Single API call to get all player game logs for this season
+            response = playergamelogs.PlayerGameLogs(
+                season_nullable=season,
+                season_type_nullable="Regular Season",
+                timeout=120  # Longer timeout for historical data
+            )
+            df = response.get_data_frames()[0]
+
+            if df.empty:
+                print(f"No game logs found for {season}.")
+                return {'inserted': 0, 'skipped': 0}
+
+            print(f"Fetched {len(df)} game log entries from API.")
+
+            # Filter to only the columns we need
+            available_cols = [col for col in COLUMNS if col in df.columns]
+            df = df[available_cols].copy()
+
+            # Rename columns to match database schema (lowercase)
+            column_mapping = {
+                'SEASON_YEAR': 'season',
+                'PLAYER_ID': 'player_id',
+                'TEAM_ID': 'team_id',
+                'GAME_ID': 'game_id',
+                'GAME_DATE': 'game_date',
+                'MATCHUP': 'matchup',
+                'WL': 'wl',
+                'MIN': 'min',
+                'PTS': 'pts',
+                'REB': 'reb',
+                'AST': 'ast',
+                'STL': 'stl',
+                'BLK': 'blk',
+                'FGM': 'fgm',
+                'FGA': 'fga',
+                'FG_PCT': 'fg_pct',
+                'FG3M': 'fg3m',
+                'FG3A': 'fg3a',
+                'FG3_PCT': 'fg3_pct',
+                'FTM': 'ftm',
+                'FTA': 'fta',
+                'FT_PCT': 'ft_pct',
+                'TOV': 'tov',
+                'PF': 'pf',
+                'PLUS_MINUS': 'plus_minus',
+                'OREB': 'oreb',
+                'DREB': 'dreb',
+            }
+            df = df.rename(columns=column_mapping)
+
+            # Save to database
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get count before insert for this season
+            cursor.execute("SELECT COUNT(*) FROM player_game_logs WHERE season = ?", (season,))
+            count_before = cursor.fetchone()[0]
+
+            # Insert with OR IGNORE to skip duplicates (based on game_id, player_id PK)
+            insert_sql = '''
+                INSERT OR IGNORE INTO player_game_logs (
+                    game_id, player_id, team_id, season, game_date, matchup, wl,
+                    min, pts, reb, ast, stl, blk,
+                    fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
+                    ftm, fta, ft_pct, tov, pf, plus_minus, oreb, dreb
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+
+            for _, row in df.iterrows():
+                cursor.execute(insert_sql, (
+                    row['game_id'],
+                    row['player_id'],
+                    row['team_id'],
+                    row['season'],
+                    row['game_date'],
+                    row['matchup'],
+                    row.get('wl', None),
+                    row['min'],
+                    row['pts'],
+                    row['reb'],
+                    row['ast'],
+                    row['stl'],
+                    row['blk'],
+                    row['fgm'],
+                    row['fga'],
+                    row['fg_pct'],
+                    row['fg3m'],
+                    row['fg3a'],
+                    row['fg3_pct'],
+                    row['ftm'],
+                    row['fta'],
+                    row['ft_pct'],
+                    row['tov'],
+                    row.get('pf', None),
+                    row.get('plus_minus', None),
+                    row.get('oreb', None),
+                    row.get('dreb', None),
+                ))
+
+            conn.commit()
+
+            # Get count after insert for this season
+            cursor.execute("SELECT COUNT(*) FROM player_game_logs WHERE season = ?", (season,))
+            count_after = cursor.fetchone()[0]
+
+            # Get total count
+            cursor.execute("SELECT COUNT(*) FROM player_game_logs")
+            total_count = cursor.fetchone()[0]
+
+            inserted = count_after - count_before
+            skipped = len(df) - inserted
+
+            # Update pf for existing records that have NULL pf values
+            print("Updating pf values for existing records...")
+            update_sql = '''
+                UPDATE player_game_logs SET pf = ? WHERE game_id = ? AND player_id = ? AND pf IS NULL
+            '''
+            updated_count = 0
+            for _, row in df.iterrows():
+                if row.get('pf') is not None:
+                    cursor.execute(update_sql, (row['pf'], row['game_id'], row['player_id']))
+                    updated_count += cursor.rowcount
+            conn.commit()
+            conn.close()
+
+            print(f"\n{season} Season Results:")
+            print(f"  Inserted: {inserted} new rows")
+            print(f"  Skipped: {skipped} existing rows")
+            print(f"  Updated pf for: {updated_count} existing rows")
+            print(f"  Season total: {count_after}")
+            print(f"  Database total: {total_count}")
+
+            return {'inserted': inserted, 'skipped': skipped, 'updated_pf': updated_count, 'season_total': count_after}
+
+        except Exception as e:
+            print(f"Error collecting historical game logs for {season}: {e}")
+            import traceback
+            traceback.print_exc()
             return {'inserted': 0, 'skipped': 0}
 
     def collect_game_scores(self) -> Dict[str, int]:
@@ -2492,8 +2763,144 @@ class NBAStatsCollector:
             print(f"Error collecting game scores: {e}")
             return {'updated': 0}
 
+    def collect_injuries(self) -> Dict[str, int]:
+        """
+        Collect current injury report from NBA.com with ESPN as fallback.
+
+        Appends to player_injuries table with collection_date to preserve history.
+
+        Returns:
+            Dictionary with collection stats: inserted, source, errors
+        """
+        import requests
+        from datetime import datetime
+
+        stats = {'inserted': 0, 'source': None, 'errors': []}
+        injuries = []
+
+        print("Collecting injury report...")
+
+        # Try NBA.com first
+        try:
+            print("  Trying NBA.com injury report...")
+            url = "https://cdn.nba.com/static/json/liveData/injuries/injuries_all.json"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://www.nba.com/',
+                'Accept': 'application/json'
+            }
+
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            # Parse NBA.com format
+            for team in data.get('teams', []):
+                team_id = team.get('teamId')
+                for player in team.get('players', []):
+                    injuries.append({
+                        'player_id': player.get('personId'),
+                        'player_name': f"{player.get('firstName', '')} {player.get('lastName', '')}".strip(),
+                        'team_id': team_id,
+                        'status': player.get('injuryStatus', 'Unknown'),
+                        'description': player.get('reason', '')
+                    })
+
+            stats['source'] = 'nba.com'
+            print(f"  Found {len(injuries)} injuries from NBA.com")
+
+        except Exception as e:
+            stats['errors'].append(f"NBA.com: {e}")
+            print(f"  NBA.com failed: {e}")
+
+            # Fallback to ESPN
+            try:
+                print("  Trying ESPN API fallback...")
+                url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                # ESPN format: 
+                for team in data.get('injuries', []):
+                    for injury in team.get('injuries', []):
+                        athlete_data = injury.get('athlete', {})
+                        # Extract player ID from links if available
+                        player_id = None
+                        for link in athlete_data.get('links', []):
+                            href = link.get('href', '')
+                            if '/id/' in href:
+                                try:
+                                    player_id = int(href.split('/id/')[1].split('/')[0])
+                                except (ValueError, IndexError):
+                                    pass
+                                break
+
+                        injuries.append({
+                            'player_id': player_id,
+                            'player_name': athlete_data.get('displayName', ''),
+                            'team_id': None,  # ESPN doesn't provide team_id directly
+                            'status': injury.get('status', 'Unknown'),
+                            'description': injury.get('longComment', injury.get('shortComment', ''))
+                        })
+
+                stats['source'] = 'espn'
+                print(f"  Found {len(injuries)} injuries from ESPN")
+
+            except Exception as e2:
+                stats['errors'].append(f"ESPN: {e2}")
+                print(f"  ESPN also failed: {e2}")
+                return stats
+
+        if not injuries:
+            print("  No injuries found from any source")
+            return stats
+
+        # Insert injuries into database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        collection_date = datetime.now().strftime('%Y-%m-%d')
+
+        for injury in injuries:
+            try:
+                cursor.execute('''
+                    INSERT INTO player_injuries
+                    (player_id, player_name, team_id, injury_status, injury_description, collection_date, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(player_id, collection_date) DO UPDATE SET
+                        injury_status = excluded.injury_status,
+                        injury_description = excluded.injury_description,
+                        source = excluded.source
+                ''', (
+                    injury.get('player_id'),
+                    injury.get('player_name'),
+                    injury.get('team_id'),
+                    injury.get('status'),
+                    injury.get('description'),
+                    collection_date,
+                    stats['source']
+                ))
+
+                if cursor.rowcount > 0:
+                    stats['inserted'] += 1
+
+            except sqlite3.Error as e:
+                stats['errors'].append(f"DB error for {injury.get('player_name')}: {e}")
+
+        conn.commit()
+        conn.close()
+
+        print(f"\n{'=' * 60}")
+        print(f"Injury collection complete!")
+        print(f"  Source: {stats['source']}")
+        print(f"  Inserted/Updated: {stats['inserted']}")
+        if stats['errors']:
+            print(f"  Errors: {len(stats['errors'])}")
+        print(f"{'=' * 60}")
+
+        return stats
+
 
 if __name__ == "__main__":
     collector = NBAStatsCollector()
-    # collector.collect_and_save_player("Devin Booker")
     collector.collect_all_active_players()
