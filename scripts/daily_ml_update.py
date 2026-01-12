@@ -97,12 +97,21 @@ def collect_team_pace() -> Dict:
     return collector.collect_team_pace()
 
 
+def scrape_odds_api() -> Dict:
+    """Scrape props from Odds API for training data."""
+    from src.odds import PropsScraper
+    scraper = PropsScraper(db_path='data/nba_stats.db')
+    events, props = scraper.scrape_all_props()
+    return {'events': events, 'props': props, 'quota_remaining': scraper.api.quota_remaining}
+
+
 PIPELINE_STEPS = {
     'logs': ('Game Logs', collect_game_logs),
     'injuries': ('Injuries', collect_injuries),
     'features': ('Derived Features', update_features),
     'rolling': ('Rolling Stats', update_rolling_stats),
     'props': ('Prop Outcomes', process_prop_outcomes),
+    'odds_api': ('Odds API Props', scrape_odds_api),
     'pace': ('Team Pace (weekly)', collect_team_pace),
 }
 
@@ -124,7 +133,7 @@ def run_pipeline(steps: List[str] = None, dry_run: bool = False) -> bool:
 
     # Default daily steps (pace only on Mondays)
     if steps is None:
-        steps = ['logs', 'injuries', 'features', 'rolling', 'props']
+        steps = ['logs', 'injuries', 'features', 'rolling', 'props', 'odds_api']
 
         # Add pace on Mondays
         if datetime.now().weekday() == 0:
@@ -188,6 +197,7 @@ Steps available:
   features  - Update derived features (home/away, rest days)
   rolling   - Update rolling statistics (L5, L10, L20)
   props     - Process yesterday's prop outcomes
+  odds_api  - Scrape props from Odds API (DraftKings, FanDuel, BetOnline)
   pace      - Update team pace data (normally weekly)
 
 Examples:

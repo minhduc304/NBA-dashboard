@@ -222,35 +222,31 @@ class UnderdogScraper:
         cursor.execute('SELECT COUNT(*) FROM underdog_props')
         count_before = cursor.fetchone()[0]
 
-        # Insert rows (unique index will prevent duplicates)
+        # Insert or update rows (unique index on full_name, stat_name, stat_value, choice, game_date)
         inserted = 0
         for _, row in self.underdog_props.iterrows():
-            try:
-                cursor.execute('''
-                    INSERT INTO underdog_props (
-                        full_name, team_name, opponent_name, position_name,
-                        stat_name, stat_value, choice,
-                        american_price, decimal_price,
-                        scheduled_at, updated_at, scraped_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    row['full_name'],
-                    row.get('team_name'),
-                    row.get('opponent_name'),
-                    row.get('position_name'),
-                    row['stat_name'],
-                    row['stat_value'],
-                    row['choice'],
-                    row.get('american_price'),
-                    row.get('decimal_price'),
-                    row.get('scheduled_at'),
-                    row['updated_at'],
-                    row['scraped_at']
-                ))
-                inserted += 1
-            except sqlite3.IntegrityError:
-                # Duplicate - skip (unique index violation)
-                pass
+            cursor.execute('''
+                INSERT OR REPLACE INTO underdog_props (
+                    full_name, team_name, opponent_name, position_name,
+                    stat_name, stat_value, choice,
+                    american_price, decimal_price,
+                    scheduled_at, updated_at, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                row['full_name'],
+                row.get('team_name'),
+                row.get('opponent_name'),
+                row.get('position_name'),
+                row['stat_name'],
+                row['stat_value'],
+                row['choice'],
+                row.get('american_price'),
+                row.get('decimal_price'),
+                row.get('scheduled_at'),
+                row['updated_at'],
+                row['scraped_at']
+            ))
+            inserted += 1
 
         conn.commit()
 

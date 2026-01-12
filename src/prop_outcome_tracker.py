@@ -16,7 +16,6 @@ Usage:
 """
 
 import sqlite3
-import argparse
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import re
@@ -485,9 +484,23 @@ class PropOutcomeTracker:
             prev_date = game_date
 
         # Get all unprocessed props for this date (only 'over' choice to avoid duplicates)
+        # Also fetch the under odds via subquery
         # Check both the prop date and previous day for existing outcomes (timezone handling)
         cursor.execute('''
-            SELECT DISTINCT up.id, up.full_name, up.stat_name, up.stat_value
+            SELECT DISTINCT
+                up.id,
+                up.full_name,
+                up.stat_name,
+                up.stat_value,
+                up.american_price as over_odds,
+                (SELECT up2.american_price
+                 FROM underdog_props up2
+                 WHERE up2.full_name = up.full_name
+                 AND up2.stat_name = up.stat_name
+                 AND up2.stat_value = up.stat_value
+                 AND DATE(up2.scheduled_at) = DATE(up.scheduled_at)
+                 AND up2.choice = 'under'
+                 LIMIT 1) as under_odds
             FROM underdog_props up
             WHERE DATE(up.scheduled_at) = DATE(?)
             AND up.choice = 'over'
@@ -517,6 +530,8 @@ class PropOutcomeTracker:
             player_name = prop['full_name']
             stat_type = prop['stat_name']
             line = prop['stat_value']
+            over_odds = prop['over_odds']
+            under_odds = prop['under_odds']
 
             # Skip unsupported stat types
             if stat_type in self.PERIOD_STATS or stat_type in {'game_high_scorer', 'team_high_scorer', '3_points_each_quarter'}:
@@ -567,13 +582,15 @@ class PropOutcomeTracker:
                     INSERT OR IGNORE INTO prop_outcomes (
                         prop_id, player_name, player_id, game_id, game_date,
                         stat_type, line, actual_value, hit_over, hit_under,
-                        is_push, edge, edge_pct, season_avg, l5_avg, l10_avg
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_push, edge, edge_pct, season_avg, l5_avg, l10_avg,
+                        source, sportsbook, over_odds, under_odds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     prop['id'], player_name, player_id,
                     game_log.get('game_id'), actual_game_date, stat_type, line,
                     actual, hit_over, hit_under, is_push, edge, edge_pct,
-                    season_avg, l5_avg, l10_avg
+                    season_avg, l5_avg, l10_avg, 'underdog', 'underdog',
+                    over_odds, under_odds
                 ))
 
                 conn.commit()
@@ -692,6 +709,190 @@ class PropOutcomeTracker:
 
         conn.close()
         return stats
+
+    def process_odds_api_props_for_date(self, game_date: str, verbose: bool = False) -> Dict[str, int]:
+        """
+        Process all odds_api_props for a specific game date.
+
+        Args:
+            game_date: Date string in YYYY-MM-DD format
+            verbose: If True, print details for each prop
+
+        Returns:
+            Dictionary with processing statistics
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Calculate previous day for timezone handling
+        try:
+            date_obj = datetime.strptime(game_date, '%Y-%m-%d')
+            prev_date = (date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
+        except ValueError:
+            prev_date = game_date
+
+        # Get all unprocessed odds_api props for this date
+        # Include sportsbook and odds to track which book had this line
+        cursor.execute('''
+            SELECT player_name, stat_type, line, game_date, sportsbook,
+                   over_odds, under_odds
+            FROM odds_api_props
+            WHERE game_date = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM prop_outcomes po
+                WHERE po.player_name = odds_api_props.player_name
+                AND (po.game_date = ? OR po.game_date = ?)
+                AND po.stat_type = odds_api_props.stat_type
+                AND po.line = odds_api_props.line
+                AND po.sportsbook = odds_api_props.sportsbook
+            )
+        ''', (game_date, game_date, prev_date))
+
+        props = cursor.fetchall()
+        conn.close()
+
+        stats = {
+            'processed': 0,
+            'matched': 0,
+            'no_game_log': 0,
+            'unsupported_stat': 0,
+            'errors': 0
+        }
+
+        for prop in props:
+            stats['processed'] += 1
+
+            player_name = prop['player_name']
+            stat_type = prop['stat_type']
+            line = prop['line']
+            sportsbook = prop['sportsbook']
+            over_odds = prop['over_odds']
+            under_odds = prop['under_odds']
+
+            # Skip unsupported stat types
+            if stat_type in self.PERIOD_STATS or stat_type in self.SPECIAL_STATS:
+                stats['unsupported_stat'] += 1
+                if verbose:
+                    print(f"  SKIP: {player_name} - {stat_type} (unsupported)")
+                continue
+
+            # Find matching game log
+            result = self.find_matching_game_log(player_name, game_date)
+
+            if not result:
+                stats['no_game_log'] += 1
+                if verbose:
+                    print(f"  NO MATCH: {player_name} on {game_date}")
+                continue
+
+            game_log, actual_game_date = result
+
+            # Calculate actual value
+            actual = self.calculate_stat_value(game_log, stat_type)
+
+            if actual is None:
+                stats['unsupported_stat'] += 1
+                if verbose:
+                    print(f"  SKIP: {player_name} - {stat_type} (cannot calculate)")
+                continue
+
+            # Calculate rolling averages
+            player_id = game_log.get('player_id')
+            l5_avg = self.get_rolling_average(int(player_id), stat_type, actual_game_date, 5) if player_id else None
+            l10_avg = self.get_rolling_average(int(player_id), stat_type, actual_game_date, 10) if player_id else None
+            season_avg = self.get_season_average(player_name, stat_type)
+
+            # Determine outcome
+            hit_over = 1 if actual > line else 0
+            hit_under = 1 if actual < line else 0
+            is_push = 1 if actual == line else 0
+            edge = actual - line
+            edge_pct = (edge / line * 100) if line > 0 else 0
+
+            # Insert outcome
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+
+                cursor.execute('''
+                    INSERT OR IGNORE INTO prop_outcomes (
+                        prop_id, player_name, player_id, game_id, game_date,
+                        stat_type, line, actual_value, hit_over, hit_under,
+                        is_push, edge, edge_pct, season_avg, l5_avg, l10_avg,
+                        source, sportsbook, over_odds, under_odds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    None,  # No prop_id for odds_api
+                    player_name, player_id,
+                    game_log.get('game_id'), actual_game_date, stat_type, line,
+                    actual, hit_over, hit_under, is_push, edge, edge_pct,
+                    season_avg, l5_avg, l10_avg, 'odds_api', sportsbook,
+                    over_odds, under_odds
+                ))
+
+                conn.commit()
+                conn.close()
+
+                stats['matched'] += 1
+
+                if verbose:
+                    result_str = "OVER" if hit_over else ("UNDER" if hit_under else "PUSH")
+                    print(f"  {result_str}: {player_name} {stat_type} - Line: {line}, Actual: {actual}")
+
+            except Exception as e:
+                stats['errors'] += 1
+                if verbose:
+                    print(f"  ERROR: {player_name} - {e}")
+
+        return stats
+
+    def backfill_odds_api_props(self, verbose: bool = False) -> Dict[str, int]:
+        """
+        Process all unprocessed odds_api props across all dates.
+
+        Args:
+            verbose: If True, print details
+
+        Returns:
+            Total statistics across all dates
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get all unique game dates with odds_api props
+        cursor.execute('''
+            SELECT DISTINCT game_date
+            FROM odds_api_props
+            WHERE game_date IS NOT NULL
+            ORDER BY game_date
+        ''')
+
+        dates = [row[0] for row in cursor.fetchall() if row[0]]
+        conn.close()
+
+        print(f"Found {len(dates)} dates with odds_api props to process")
+        print("=" * 60)
+
+        totals = {
+            'processed': 0,
+            'matched': 0,
+            'no_game_log': 0,
+            'unsupported_stat': 0,
+            'errors': 0
+        }
+
+        for game_date in dates:
+            print(f"\n{game_date}:")
+            stats = self.process_odds_api_props_for_date(game_date, verbose=verbose)
+
+            for key in totals:
+                totals[key] += stats[key]
+
+            print(f"  Matched: {stats['matched']}, No game log: {stats['no_game_log']}, "
+                  f"Unsupported: {stats['unsupported_stat']}, Errors: {stats['errors']}")
+
+        return totals
 
     def print_statistics(self):
         """Print formatted statistics about prop outcomes."""
@@ -866,43 +1067,25 @@ class PropOutcomeTracker:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Track prop outcomes for ML training')
-    parser.add_argument('--date', type=str, help='Process specific date (YYYY-MM-DD)')
-    parser.add_argument('--stats', action='store_true', help='Show statistics only')
-    parser.add_argument('--unmatched', action='store_true', help='Show unmatched player names')
-    parser.add_argument('--seed-aliases', action='store_true', help='Seed alias table from NAME_CORRECTIONS')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
-    parser.add_argument('--db', type=str, default='data/nba_stats.db', help='Database path')
+    """Process all prop outcomes (Underdog + Odds API)."""
+    tracker = PropOutcomeTracker(db_path='data/nba_stats.db')
 
-    args = parser.parse_args()
+    # Process Underdog props
+    print("Processing Underdog props...")
+    underdog_totals = tracker.backfill_all(verbose=False)
 
-    tracker = PropOutcomeTracker(db_path=args.db)
+    # Process Odds API props
+    print("\nProcessing Odds API props...")
+    odds_totals = tracker.backfill_odds_api_props(verbose=False)
 
-    if args.seed_aliases:
-        tracker.seed_aliases_from_corrections()
-    elif args.unmatched:
-        tracker.print_unmatched_names()
-    elif args.stats:
-        tracker.print_statistics()
-    elif args.date:
-        print(f"Processing props for {args.date}...")
-        stats = tracker.process_props_for_date(args.date, verbose=args.verbose)
-        print(f"\nResults: {stats}")
-    else:
-        print("Backfilling all prop outcomes...")
-        totals = tracker.backfill_all(verbose=args.verbose)
+    # Summary
+    print("\n" + "=" * 60)
+    print("COMPLETE")
+    print("=" * 60)
+    print(f"Underdog: {underdog_totals['matched']} matched")
+    print(f"Odds API: {odds_totals['matched']} matched")
 
-        print("\n" + "=" * 60)
-        print("BACKFILL COMPLETE")
-        print("=" * 60)
-        print(f"Total Processed: {totals['processed']}")
-        print(f"Successfully Matched: {totals['matched']}")
-        print(f"No Game Log Found: {totals['no_game_log']}")
-        print(f"Unsupported Stats: {totals['unsupported_stat']}")
-        print(f"Errors: {totals['errors']}")
-
-        # Show final statistics
-        tracker.print_statistics()
+    tracker.print_statistics()
 
 
 if __name__ == '__main__':

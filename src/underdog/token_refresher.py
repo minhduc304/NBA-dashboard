@@ -1,14 +1,19 @@
 import json
-from playwright.sync_api import sync_playwright
 import time
 import os
+
+try:
+    from playwright.sync_api import sync_playwright
+    playwright_available = True
+except ImportError:
+    playwright_available = False
+    sync_playwright = None
 
 try:
     from playwright_stealth import Stealth
     stealth_available = True
 except ImportError:
     stealth_available = False
-    print("Warning: playwright-stealth not available, bot detection may occur")
 
 
 class TokenRefresher:
@@ -21,6 +26,11 @@ class TokenRefresher:
         """
         Automate login to Underdog Fantasy and extract authentication tokens
         """
+        if not playwright_available:
+            raise ImportError(
+                "Playwright is required for auto token refresh. "
+                "Install with: pip install playwright && playwright install chromium"
+            )
         with sync_playwright() as p:
             # Launch browser (set headless=False to see what's happening)
             browser = p.chromium.launch(headless=True)

@@ -1,0 +1,91 @@
+"""
+ML Configuration
+
+Feature lists, hyperparameters, and constants for prop prediction models.
+"""
+
+from typing import Dict, List
+
+# Map prop stat types to rolling stats column prefixes
+STAT_COLUMNS: Dict[str, str] = {
+    'points': 'pts',
+    'rebounds': 'reb',
+    'assists': 'ast',
+    'three_points_made': 'fg3m',
+    'pts_rebs_asts': 'pra',
+    'pts_rebs': 'pts',  # Will need special handling
+    'pts_asts': 'pts',  # Will need special handling
+    'rebs_asts': 'reb',  # Will need special handling
+    'steals': 'stl',
+    'blocks': 'blk',
+    'turnovers': 'tov',
+    'blks_stls': 'blk',  # Will need special handling
+}
+
+# Stat types that require combining multiple columns
+COMBO_STATS: Dict[str, List[str]] = {
+    'pts_rebs': ['pts', 'reb'],
+    'pts_asts': ['pts', 'ast'],
+    'rebs_asts': ['reb', 'ast'],
+    'pts_rebs_asts': ['pts', 'reb', 'ast'],
+    'blks_stls': ['blk', 'stl'],
+}
+
+# Priority stat types for training (by sample size)
+# Note: pts_rebs_asts and three_points_made require additional rolling stat columns
+# that haven't been calculated yet (l10_pra_std, pra_trend, l20_fg3m, fg3m_trend)
+PRIORITY_STATS: List[str] = [
+    'points',
+    'rebounds',
+    'assists',
+]
+
+# LightGBM Regressor parameters
+REGRESSOR_PARAMS: Dict = {
+    'objective': 'regression',
+    'metric': 'mae',
+    'boosting_type': 'gbdt',
+    'num_leaves': 31,
+    'learning_rate': 0.05,
+    'feature_fraction': 0.8,
+    'bagging_fraction': 0.8,
+    'bagging_freq': 5,
+    'verbose': -1,
+    'n_estimators': 500,
+    'random_state': 42,
+}
+
+# XGBoost Classifier parameters
+CLASSIFIER_PARAMS: Dict = {
+    'objective': 'binary:logistic',
+    'eval_metric': 'auc',
+    'max_depth': 6,
+    'learning_rate': 0.05,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'n_estimators': 500,
+    'random_state': 42,
+    'use_label_encoder': False,
+}
+
+# Combine into single config
+MODEL_PARAMS: Dict = {
+    'regressor': REGRESSOR_PARAMS,
+    'classifier': CLASSIFIER_PARAMS,
+}
+
+# Default database path
+DEFAULT_DB_PATH = 'data/nba_stats.db'
+
+# Default model directory
+DEFAULT_MODEL_DIR = 'models/'
+
+# Current season
+CURRENT_SEASON = '2025-26'
+
+# Minimum samples required per stat type
+MIN_SAMPLES = 100
+
+# Validation/Test split - number of days to hold out
+DEFAULT_VAL_DAYS = 2   # For early stopping (validation)
+DEFAULT_TEST_DAYS = 2  # For final evaluation (test)
