@@ -6,3 +6,4 @@ underdog_config.json
 .env
 nba_stats_backup.db
 /logs
+/models

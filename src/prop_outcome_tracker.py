@@ -1,8 +1,8 @@
 """
 Prop Outcome Tracker
 
-Joins underdog_props with player_game_logs to determine actual outcomes.
-This creates labeled training data for ML models.
+Joins all_props (unified props from all sources) with player_game_logs
+to determine actual outcomes. This creates labeled training data for ML models.
 
 Usage:
     # Process all unprocessed props
@@ -145,7 +145,10 @@ class PropOutcomeTracker:
 
     def _ensure_table_exists(self):
         """Create prop_outcomes table if it doesn't exist."""
-        from .init_db import init_database
+        try:
+            from .init_db import init_database
+        except ImportError:
+            from init_db import init_database
         init_database(self.db_path)
 
     def find_player_id_by_name(self, name: str) -> Optional[int]:
@@ -483,33 +486,36 @@ class PropOutcomeTracker:
         except ValueError:
             prev_date = game_date
 
-        # Get all unprocessed props for this date (only 'over' choice to avoid duplicates)
+        # Get all unprocessed props for this date from all sources (only 'over' choice to avoid duplicates)
         # Also fetch the under odds via subquery
         # Check both the prop date and previous day for existing outcomes (timezone handling)
         cursor.execute('''
             SELECT DISTINCT
-                up.id,
-                up.full_name,
-                up.stat_name,
-                up.stat_value,
-                up.american_price as over_odds,
-                (SELECT up2.american_price
-                 FROM underdog_props up2
-                 WHERE up2.full_name = up.full_name
-                 AND up2.stat_name = up.stat_name
-                 AND up2.stat_value = up.stat_value
-                 AND DATE(up2.scheduled_at) = DATE(up.scheduled_at)
-                 AND up2.choice = 'under'
+                ap.id,
+                ap.full_name,
+                ap.stat_name,
+                ap.stat_value,
+                ap.source,
+                ap.american_odds as over_odds,
+                (SELECT ap2.american_odds
+                 FROM all_props ap2
+                 WHERE ap2.full_name = ap.full_name
+                 AND ap2.stat_name = ap.stat_name
+                 AND ap2.stat_value = ap.stat_value
+                 AND ap2.source = ap.source
+                 AND DATE(ap2.scheduled_at) = DATE(ap.scheduled_at)
+                 AND ap2.choice = 'under'
                  LIMIT 1) as under_odds
-            FROM underdog_props up
-            WHERE DATE(up.scheduled_at) = DATE(?)
-            AND up.choice = 'over'
+            FROM all_props ap
+            WHERE DATE(ap.scheduled_at) = DATE(?)
+            AND ap.choice = 'over'
             AND NOT EXISTS (
                 SELECT 1 FROM prop_outcomes po
-                WHERE po.player_name = up.full_name
+                WHERE po.player_name = ap.full_name
                 AND (po.game_date = ? OR po.game_date = ?)
-                AND po.stat_type = up.stat_name
-                AND po.line = up.stat_value
+                AND po.stat_type = ap.stat_name
+                AND po.line = ap.stat_value
+                AND po.source = ap.source
             )
         ''', (game_date, game_date, prev_date))
 
@@ -530,6 +536,7 @@ class PropOutcomeTracker:
             player_name = prop['full_name']
             stat_type = prop['stat_name']
             line = prop['stat_value']
+            source = prop['source']
             over_odds = prop['over_odds']
             under_odds = prop['under_odds']
 
@@ -589,7 +596,7 @@ class PropOutcomeTracker:
                     prop['id'], player_name, player_id,
                     game_log.get('game_id'), actual_game_date, stat_type, line,
                     actual, hit_over, hit_under, is_push, edge, edge_pct,
-                    season_avg, l5_avg, l10_avg, 'underdog', 'underdog',
+                    season_avg, l5_avg, l10_avg, source, source,
                     over_odds, under_odds
                 ))
 
@@ -611,7 +618,7 @@ class PropOutcomeTracker:
 
     def backfill_all(self, verbose: bool = False) -> Dict[str, int]:
         """
-        Process all unprocessed props across all dates.
+        Process all unprocessed props from all sources across all dates.
 
         Args:
             verbose: If True, print details
@@ -622,10 +629,10 @@ class PropOutcomeTracker:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Get all unique game dates with props
+        # Get all unique game dates with props from all sources
         cursor.execute('''
             SELECT DISTINCT DATE(scheduled_at) as game_date
-            FROM underdog_props
+            FROM all_props
             WHERE scheduled_at IS NOT NULL
             ORDER BY game_date
         ''')
@@ -944,17 +951,17 @@ class PropOutcomeTracker:
         cursor = conn.cursor()
 
         cursor.execute('''
-            SELECT DISTINCT up.full_name, COUNT(*) as cnt
-            FROM underdog_props up
+            SELECT DISTINCT ap.full_name, COUNT(*) as cnt
+            FROM all_props ap
             WHERE NOT EXISTS (
                 SELECT 1 FROM player_stats ps
-                WHERE ps.player_name = up.full_name
+                WHERE ps.player_name = ap.full_name
             )
             AND NOT EXISTS (
                 SELECT 1 FROM player_name_aliases pna
-                WHERE pna.alias = up.full_name
+                WHERE pna.alias = ap.full_name
             )
-            GROUP BY up.full_name
+            GROUP BY ap.full_name
             ORDER BY cnt DESC
             LIMIT ?
         ''', (limit,))
@@ -1067,14 +1074,14 @@ class PropOutcomeTracker:
 
 
 def main():
-    """Process all prop outcomes (Underdog + Odds API)."""
+    """Process all prop outcomes from all sources (Underdog, PrizePicks, Odds API)."""
     tracker = PropOutcomeTracker(db_path='data/nba_stats.db')
 
-    # Process Underdog props
-    print("Processing Underdog props...")
-    underdog_totals = tracker.backfill_all(verbose=False)
+    # Process props from all sources (via all_props table)
+    print("Processing props from all sources (Underdog, PrizePicks, etc.)...")
+    totals = tracker.backfill_all(verbose=False)
 
-    # Process Odds API props
+    # Process Odds API props (separate table)
     print("\nProcessing Odds API props...")
     odds_totals = tracker.backfill_odds_api_props(verbose=False)
 
@@ -1082,7 +1089,7 @@ def main():
     print("\n" + "=" * 60)
     print("COMPLETE")
     print("=" * 60)
-    print(f"Underdog: {underdog_totals['matched']} matched")
+    print(f"All Sources: {totals['matched']} matched")
     print(f"Odds API: {odds_totals['matched']} matched")
 
     tracker.print_statistics()

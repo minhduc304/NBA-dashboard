@@ -11,10 +11,14 @@ import pandas as pd
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 
-from .config import DEFAULT_DB_PATH, DEFAULT_MODEL_DIR, DEFAULT_TEST_DAYS, DEFAULT_VAL_DAYS
+from .config import (
+    DEFAULT_DB_PATH, DEFAULT_MODEL_DIR, DEFAULT_TEST_DAYS, DEFAULT_VAL_DAYS,
+    get_model_params,
+)
 from .data_loader import PropDataLoader
 from .features import FeatureEngineer
 from .models import PropRegressor, PropClassifier
+from .feature_selector import FeatureSelector
 from .evaluator import (
     evaluate_classifier,
     evaluate_regressor,
@@ -31,6 +35,9 @@ class ModelTrainer:
         stat_type: str,
         db_path: str = DEFAULT_DB_PATH,
         model_dir: str = DEFAULT_MODEL_DIR,
+        use_tuned_params: bool = True,
+        max_classifier_features: Optional[int] = None,
+        min_feature_importance: float = 0.001,
     ):
         """
         Initialize trainer for a specific stat type.
@@ -39,18 +46,30 @@ class ModelTrainer:
             stat_type: Type of prop (points, rebounds, etc.)
             db_path: Path to database
             model_dir: Directory to save models
+            use_tuned_params: Use tuned params from Optuna if available
+            max_classifier_features: Max features for classifier (None = no limit)
+            min_feature_importance: Remove features below this importance threshold
         """
         self.stat_type = stat_type
         self.db_path = db_path
         self.model_dir = model_dir
+        self.use_tuned_params = use_tuned_params
+        self.max_classifier_features = max_classifier_features
+        self.min_feature_importance = min_feature_importance
 
         self.data_loader = PropDataLoader(db_path)
         self.feature_engineer = FeatureEngineer(stat_type)
-        self.regressor = PropRegressor()
-        self.classifier = PropClassifier()
+
+        # Load params (tuned if available)
+        reg_params = get_model_params(stat_type, 'regressor', use_tuned_params)
+        clf_params = get_model_params(stat_type, 'classifier', use_tuned_params)
+
+        self.regressor = PropRegressor(**reg_params)
+        self.classifier = PropClassifier(**clf_params)
 
         self._regressor_features = None
         self._classifier_features = None
+        self._feature_selector = None
 
     def train(
         self,
@@ -86,6 +105,19 @@ class ModelTrainer:
 
         results = {}
 
+        # === Load auxiliary data for enhanced features ===
+        if verbose:
+            print("Loading auxiliary data for feature engineering...")
+
+        matchup_stats = self.data_loader.get_player_vs_opponent_stats(self.stat_type)
+        consistency_stats = self.data_loader.get_player_consistency_stats(self.stat_type)
+        opp_defense = self.data_loader.get_opponent_stat_defense(self.stat_type)
+
+        if verbose:
+            print(f"  Matchup data: {len(matchup_stats)} player-opponent pairs")
+            print(f"  Consistency data: {len(consistency_stats)} players")
+            print(f"  Opponent defense data: {len(opp_defense)} teams")
+
         # === REGRESSOR: Train on historical game logs ===
         if use_historical:
             if verbose:
@@ -98,8 +130,13 @@ class ModelTrainer:
             if verbose:
                 print(f"  Loaded {len(hist_df)} historical games")
 
-            # Engineer features
-            hist_df = self.feature_engineer.engineer_features(hist_df)
+            # Engineer features with auxiliary data
+            hist_df = self.feature_engineer.engineer_features(
+                hist_df,
+                matchup_stats=matchup_stats,
+                consistency_stats=consistency_stats,
+                opp_defense=opp_defense,
+            )
 
             # Time-based 3-way split for regressor
             hist_dates = sorted(hist_df['game_date'].unique())
@@ -171,8 +208,13 @@ class ModelTrainer:
         if verbose:
             print(f"  Loaded {len(clf_df)} prop outcomes")
 
-        # Engineer features
-        clf_df = self.feature_engineer.engineer_features(clf_df)
+        # Engineer features with auxiliary data
+        clf_df = self.feature_engineer.engineer_features(
+            clf_df,
+            matchup_stats=matchup_stats,
+            consistency_stats=consistency_stats,
+            opp_defense=opp_defense,
+        )
 
         # Time-based 3-way split for classifier
         clf_dates = sorted(clf_df['game_date'].unique())
@@ -207,6 +249,59 @@ class ModelTrainer:
         y_train_clf = clf_train_df['hit_over'].values
         y_val_clf = clf_val_df['hit_over'].values
         y_test_clf = clf_test_df['hit_over'].values
+
+        # Feature selection: Train initial model, select important features, retrain
+        use_feature_selection = (
+            self.max_classifier_features is not None or
+            self.min_feature_importance > 0
+        )
+
+        if use_feature_selection:
+            if verbose:
+                print("Training initial classifier for feature selection...")
+
+            # Train initial model to get feature importances
+            self.classifier.fit(
+                X_train_clf, y_train_clf,
+                eval_set=(X_val_clf, y_val_clf),
+                feature_names=self._classifier_features,
+            )
+
+            # Apply feature selection
+            self._feature_selector = FeatureSelector(
+                method='importance',
+                max_features=self.max_classifier_features,
+                min_importance=self.min_feature_importance,
+            )
+            self._feature_selector.fit(
+                X_train_clf, y_train_clf,
+                self._classifier_features,
+                model=self.classifier,
+                task='classification',
+            )
+
+            # Transform to selected features
+            X_train_clf, self._classifier_features = self._feature_selector.transform(
+                X_train_clf, self._classifier_features
+            )
+            X_val_clf, _ = self._feature_selector.transform(
+                X_val_clf, [f for f in all_clf_features if f in clf_df.columns]
+            )
+            X_test_clf, _ = self._feature_selector.transform(
+                X_test_clf, [f for f in all_clf_features if f in clf_df.columns]
+            )
+
+            if verbose:
+                removed = self._feature_selector.get_removed_features(
+                    [f for f in all_clf_features if f in clf_df.columns]
+                )
+                print(f"  Selected {len(self._classifier_features)} features, removed {len(removed)}")
+                if removed:
+                    print(f"  Removed: {', '.join(removed[:5])}{'...' if len(removed) > 5 else ''}")
+
+            # Reinitialize classifier for clean retraining
+            clf_params = get_model_params(self.stat_type, 'classifier', self.use_tuned_params)
+            self.classifier = PropClassifier(**clf_params)
 
         # Train classifier with validation set for early stopping
         if verbose:
@@ -395,6 +490,9 @@ def train_all_models(
     model_dir: str = DEFAULT_MODEL_DIR,
     val_days: int = DEFAULT_VAL_DAYS,
     test_days: int = DEFAULT_TEST_DAYS,
+    use_tuned_params: bool = True,
+    max_classifier_features: Optional[int] = None,
+    min_feature_importance: float = 0.001,
 ) -> Dict[str, Dict]:
     """
     Train models for multiple stat types.
@@ -405,6 +503,9 @@ def train_all_models(
         model_dir: Directory to save models
         val_days: Days to hold out for validation (early stopping)
         test_days: Days to hold out for final testing
+        use_tuned_params: Use tuned params from Optuna if available
+        max_classifier_features: Max features for classifier (None = no limit)
+        min_feature_importance: Remove features below this threshold
 
     Returns:
         Dictionary mapping stat_type to results
@@ -418,7 +519,12 @@ def train_all_models(
 
     for stat_type in stat_types:
         try:
-            trainer = ModelTrainer(stat_type, db_path, model_dir)
+            trainer = ModelTrainer(
+                stat_type, db_path, model_dir,
+                use_tuned_params=use_tuned_params,
+                max_classifier_features=max_classifier_features,
+                min_feature_importance=min_feature_importance,
+            )
             results = trainer.train(val_days=val_days, test_days=test_days)
             trainer.save_models()
             all_results[stat_type] = results

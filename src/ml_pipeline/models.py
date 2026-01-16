@@ -19,7 +19,12 @@ class PropRegressor:
         Args:
             **params: Override default parameters
         """
-        self.params = {**REGRESSOR_PARAMS, **params}
+        # If full params passed (e.g., from tuned config), use them directly
+        # Otherwise merge with defaults
+        if 'objective' in params:
+            self.params = params.copy()
+        else:
+            self.params = {**REGRESSOR_PARAMS, **params}
         self.model = None
         self.feature_names_ = None
 
@@ -103,7 +108,12 @@ class PropClassifier:
         Args:
             **params: Override default parameters
         """
-        self.params = {**CLASSIFIER_PARAMS, **params}
+        # If full params passed (e.g., from tuned config), use them directly
+        # Otherwise merge with defaults
+        if 'objective' in params:
+            self.params = params.copy()
+        else:
+            self.params = {**CLASSIFIER_PARAMS, **params}
         self.model = None
         self.feature_names_ = None
 

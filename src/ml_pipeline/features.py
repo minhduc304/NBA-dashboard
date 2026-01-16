@@ -6,8 +6,8 @@ Transforms raw data into ML-ready features.
 
 import numpy as np
 import pandas as pd
-from typing import List, Tuple
-from .config import STAT_COLUMNS
+from typing import List, Tuple, Optional, Dict
+from .config import STAT_COLUMNS, DEFAULT_DB_PATH, CURRENT_SEASON
 
 
 def american_to_implied_prob(odds: float) -> float:
@@ -78,12 +78,21 @@ class FeatureEngineer:
         self.stat_type = stat_type
         self.stat_col = STAT_COLUMNS.get(stat_type, 'pts')
 
-    def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def engineer_features(
+        self,
+        df: pd.DataFrame,
+        matchup_stats: Optional[pd.DataFrame] = None,
+        consistency_stats: Optional[pd.DataFrame] = None,
+        opp_defense: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
         """
         Add all derived features to the dataframe.
 
         Args:
             df: DataFrame with raw features from data loader
+            matchup_stats: Player vs opponent historical stats (optional)
+            consistency_stats: Player consistency metrics (optional)
+            opp_defense: Opponent defensive stats (optional)
 
         Returns:
             DataFrame with additional engineered features
@@ -107,6 +116,15 @@ class FeatureEngineer:
 
         # Odds/vig features
         df = self._add_odds_features(df)
+
+        # NEW: Matchup features (player vs opponent)
+        df = self._add_matchup_features(df, matchup_stats)
+
+        # NEW: Consistency features
+        df = self._add_consistency_features(df, consistency_stats)
+
+        # NEW: Opponent defense features
+        df = self._add_opponent_defense_features(df, opp_defense)
 
         # Fill missing values
         df = self._handle_missing(df)
@@ -168,7 +186,7 @@ class FeatureEngineer:
     def _add_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add time-based features."""
         if 'game_date' in df.columns:
-            df['game_date_dt'] = pd.to_datetime(df['game_date'])
+            df['game_date_dt'] = pd.to_datetime(df['game_date'], format='mixed')
             df['day_of_week'] = df['game_date_dt'].dt.dayofweek
             df['month'] = df['game_date_dt'].dt.month
 
@@ -290,6 +308,202 @@ class FeatureEngineer:
 
         return df
 
+    def _add_matchup_features(
+        self,
+        df: pd.DataFrame,
+        matchup_stats: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Add player vs opponent historical features.
+
+        Features added:
+        - avg_stat_vs_opp: Player's average stat against this opponent
+        - games_vs_opp: Number of games against this opponent
+        - opp_matchup_diff: Difference between player avg vs opp and overall avg
+        - opp_matchup_pct: % change vs this opponent compared to overall
+        """
+        if matchup_stats is None or matchup_stats.empty:
+            df['avg_stat_vs_opp'] = df['l10_stat']
+            df['games_vs_opp'] = 0
+            df['opp_matchup_diff'] = 0
+            df['opp_matchup_pct'] = 0
+            df['has_matchup_history'] = 0
+            return df
+
+        # Merge matchup stats
+        if 'opponent_abbr' not in df.columns:
+            df['avg_stat_vs_opp'] = df['l10_stat']
+            df['games_vs_opp'] = 0
+            df['opp_matchup_diff'] = 0
+            df['opp_matchup_pct'] = 0
+            df['has_matchup_history'] = 0
+            return df
+
+        # Ensure consistent types for merge
+        matchup_stats = matchup_stats.copy()
+        matchup_stats['player_id'] = matchup_stats['player_id'].astype(str)
+        df['player_id'] = df['player_id'].astype(str)
+
+        df = df.merge(
+            matchup_stats[['player_id', 'opponent_abbr', 'avg_stat_vs_opp', 'games_vs_opp']],
+            on=['player_id', 'opponent_abbr'],
+            how='left'
+        )
+
+        # Fill missing with defaults
+        df['games_vs_opp'] = df['games_vs_opp'].fillna(0)
+        df['has_matchup_history'] = (df['games_vs_opp'] >= 2).astype(int)
+
+        # Use player's L10 avg if no matchup history
+        df['avg_stat_vs_opp'] = df['avg_stat_vs_opp'].fillna(df['l10_stat'])
+
+        # Calculate matchup differential
+        df['opp_matchup_diff'] = df['avg_stat_vs_opp'] - df['l10_stat']
+
+        # Percentage change vs this opponent
+        df['opp_matchup_pct'] = np.where(
+            df['l10_stat'] > 0,
+            (df['avg_stat_vs_opp'] - df['l10_stat']) / df['l10_stat'] * 100,
+            0
+        )
+
+        return df
+
+    def _add_consistency_features(
+        self,
+        df: pd.DataFrame,
+        consistency_stats: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Add player consistency/variance features.
+
+        Features added:
+        - coeff_of_variation: std / mean (higher = less consistent)
+        - consistency_range: max - min in recent games
+        - hit_rate_at_line: estimated hit rate at current line
+        """
+        if consistency_stats is None or consistency_stats.empty:
+            df['coeff_of_variation'] = 0.3  # Default CV
+            df['consistency_range'] = 10
+            df['hit_rate_at_line'] = 0.5
+            return df
+
+        # Ensure consistent types for merge
+        consistency_stats = consistency_stats.copy()
+        consistency_stats['player_id'] = consistency_stats['player_id'].astype(str)
+        df['player_id'] = df['player_id'].astype(str)
+
+        # Merge consistency stats
+        df = df.merge(
+            consistency_stats[[
+                'player_id', 'consistency_mean', 'consistency_std',
+                'consistency_max', 'consistency_min',
+                'hit_rate_10', 'hit_rate_15', 'hit_rate_20',
+                'hit_rate_25', 'hit_rate_30'
+            ]],
+            on='player_id',
+            how='left'
+        )
+
+        # Calculate coefficient of variation
+        df['coeff_of_variation'] = np.where(
+            (df['consistency_mean'].notna()) & (df['consistency_mean'] > 0),
+            df['consistency_std'].fillna(0) / df['consistency_mean'],
+            0.3  # Default
+        )
+
+        # Consistency range
+        df['consistency_range'] = (
+            df['consistency_max'].fillna(df['l10_stat'] + 10) -
+            df['consistency_min'].fillna(df['l10_stat'] - 10)
+        )
+
+        # Estimate hit rate at current line using interpolation
+        def estimate_hit_rate(row):
+            if pd.isna(row.get('line')) or row['line'] <= 0:
+                return 0.5
+
+            line = row['line']
+            # Use available hit rates for interpolation
+            hit_rates = {
+                10: row.get('hit_rate_10', 0.5),
+                15: row.get('hit_rate_15', 0.5),
+                20: row.get('hit_rate_20', 0.5),
+                25: row.get('hit_rate_25', 0.5),
+                30: row.get('hit_rate_30', 0.5),
+            }
+
+            # Find surrounding thresholds
+            thresholds = sorted(hit_rates.keys())
+
+            if line <= thresholds[0]:
+                return min(hit_rates[thresholds[0]], 0.95)
+            if line >= thresholds[-1]:
+                return max(hit_rates[thresholds[-1]], 0.05)
+
+            # Linear interpolation
+            for i in range(len(thresholds) - 1):
+                if thresholds[i] <= line <= thresholds[i + 1]:
+                    low_t, high_t = thresholds[i], thresholds[i + 1]
+                    low_r, high_r = hit_rates[low_t], hit_rates[high_t]
+                    ratio = (line - low_t) / (high_t - low_t)
+                    return low_r + (high_r - low_r) * ratio
+
+            return 0.5
+
+        if 'line' in df.columns:
+            df['hit_rate_at_line'] = df.apply(estimate_hit_rate, axis=1)
+        else:
+            df['hit_rate_at_line'] = 0.5
+
+        # Clean up intermediate columns
+        drop_cols = ['consistency_mean', 'consistency_std', 'consistency_max',
+                     'consistency_min', 'hit_rate_10', 'hit_rate_15',
+                     'hit_rate_20', 'hit_rate_25', 'hit_rate_30']
+        df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
+
+        return df
+
+    def _add_opponent_defense_features(
+        self,
+        df: pd.DataFrame,
+        opp_defense: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Add opponent defensive strength features.
+
+        Features added:
+        - opp_stat_allowed: Average stat allowed by opponent
+        - opp_stat_diff: Diff between opp avg allowed and league avg
+        """
+        if opp_defense is None or opp_defense.empty:
+            df['opp_stat_allowed'] = 0
+            df['opp_stat_diff'] = 0
+            return df
+
+        if 'opponent_abbr' not in df.columns:
+            df['opp_stat_allowed'] = 0
+            df['opp_stat_diff'] = 0
+            return df
+
+        # Calculate league average
+        league_avg = opp_defense['opp_avg_stat_allowed'].mean()
+
+        # Merge opponent defense stats
+        df = df.merge(
+            opp_defense[['opponent_abbr', 'opp_avg_stat_allowed']],
+            on='opponent_abbr',
+            how='left'
+        )
+
+        df['opp_stat_allowed'] = df['opp_avg_stat_allowed'].fillna(league_avg)
+        df['opp_stat_diff'] = df['opp_stat_allowed'] - league_avg
+
+        # Drop intermediate column
+        df = df.drop(columns=['opp_avg_stat_allowed'], errors='ignore')
+
+        return df
+
     def _handle_missing(self, df: pd.DataFrame) -> pd.DataFrame:
         """Handle missing values appropriately."""
         # Fill numeric columns with 0
@@ -311,7 +525,6 @@ class FeatureEngineer:
         """
         Return features for regressor (no line features needed).
         These features predict raw stat values from rolling stats and context.
-        Note: No opponent stats since historical data doesn't have them.
 
         Returns:
             List of column names for regressor
@@ -338,6 +551,10 @@ class FeatureEngineer:
             # Interactions (non-line based)
             'home_rested',
             'away_b2b',
+
+            # Consistency features (for value prediction)
+            'coeff_of_variation',
+            'consistency_range',
         ]
 
     def get_line_features(self) -> List[str]:
@@ -376,6 +593,46 @@ class FeatureEngineer:
             'over_fair_prob',    # No-vig probability of over (book's true estimate)
         ]
 
+    def get_matchup_features(self) -> List[str]:
+        """
+        Return matchup-specific features (player vs opponent history).
+
+        Returns:
+            List of matchup-related column names
+        """
+        return [
+            'avg_stat_vs_opp',      # Player's avg stat vs this opponent
+            'games_vs_opp',         # Sample size for matchup
+            'opp_matchup_diff',     # Diff from overall average vs this opp
+            'opp_matchup_pct',      # % change vs this opponent
+            'has_matchup_history',  # Whether we have matchup data
+        ]
+
+    def get_consistency_features(self) -> List[str]:
+        """
+        Return player consistency features.
+
+        Returns:
+            List of consistency-related column names
+        """
+        return [
+            'coeff_of_variation',   # std / mean (variance indicator)
+            'consistency_range',    # max - min in recent games
+            'hit_rate_at_line',     # Estimated hit rate at current line
+        ]
+
+    def get_opponent_defense_features(self) -> List[str]:
+        """
+        Return opponent defensive strength features.
+
+        Returns:
+            List of opponent defense column names
+        """
+        return [
+            'opp_stat_allowed',     # Avg stat allowed by opponent
+            'opp_stat_diff',        # Diff from league average
+        ]
+
     def get_classifier_features(self) -> List[str]:
         """
         Return all features for classifier (includes line + opponent + sportsbook + odds features).
@@ -396,7 +653,7 @@ class FeatureEngineer:
             'book_fanduel',
             'book_draftkings',
             'book_other',
-        ] + self.get_odds_features()
+        ] + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features()
 
     def get_available_features(self, df: pd.DataFrame) -> List[str]:
         """

@@ -222,9 +222,16 @@ class UnderdogScraper:
         cursor.execute('SELECT COUNT(*) FROM underdog_props')
         count_before = cursor.fetchone()[0]
 
+        # Get all_props count before insert
+        cursor.execute('SELECT COUNT(*) FROM all_props WHERE source = ?', ('underdog',))
+        all_count_before = cursor.fetchone()[0]
+
         # Insert or update rows (unique index on full_name, stat_name, stat_value, choice, game_date)
         inserted = 0
         for _, row in self.underdog_props.iterrows():
+            # Normalize stat_name to lowercase for consistency
+            stat_name_normalized = row['stat_name'].lower().replace(' ', '_') if row['stat_name'] else row['stat_name']
+
             cursor.execute('''
                 INSERT OR REPLACE INTO underdog_props (
                     full_name, team_name, opponent_name, position_name,
@@ -246,20 +253,46 @@ class UnderdogScraper:
                 row['updated_at'],
                 row['scraped_at']
             ))
+
+            # Also insert into unified all_props table for ML
+            cursor.execute('''
+                INSERT OR REPLACE INTO all_props (
+                    source, full_name, team_name, opponent_name, position_name,
+                    stat_name, stat_value, choice,
+                    american_odds, decimal_odds,
+                    game_id, scheduled_at, updated_at, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                'underdog',
+                row['full_name'],
+                row.get('team_name'),
+                row.get('opponent_name'),
+                row.get('position_name'),
+                stat_name_normalized,
+                row['stat_value'],
+                row['choice'],
+                row.get('american_price'),
+                row.get('decimal_price'),
+                None,  # game_id not available from Underdog
+                row.get('scheduled_at'),
+                row['updated_at'],
+                row['scraped_at']
+            ))
             inserted += 1
 
         conn.commit()
 
-        # Get count after insert
+        # Get counts after insert
         cursor.execute('SELECT COUNT(*) FROM underdog_props')
         count_after = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM all_props WHERE source = ?', ('underdog',))
+        all_count_after = cursor.fetchone()[0]
         conn.close()
 
         new_rows = count_after - count_before
-        if new_rows > 0:
-            print(f"Added {new_rows} new/changed lines (total: {count_after} rows in database)")
-        else:
-            print(f"No new or changed lines detected (total: {count_after} rows in database)")
+        all_new = all_count_after - all_count_before
+        print(f"underdog_props: +{new_rows} (total: {count_after})")
+        print(f"all_props: +{all_new} (total: {all_count_after})")
 
 # Usage example:
 if __name__ == "__main__":

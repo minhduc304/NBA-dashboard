@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""
+NBA Stats Dashboard CLI
+
+Usage:
+    ./nba --help                    # Show all commands
+    ./nba player --help             # Player commands
+    ./nba team --help               # Team commands
+    ./nba collect --help            # Collection commands
+    ./nba ml --help                 # ML pipeline commands
+    ./nba scrape --help             # Props scraping commands
+
+Examples:
+    ./nba player update "LeBron James"
+    ./nba player game-logs
+    ./nba team defense
+    ./nba collect injuries
+    ./nba ml pipeline --dry-run
+    ./nba scrape all
+"""
+
+import sys
+import os
+
+# Add project root to path
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_ROOT)
+
+from src.cli.main import cli
+
+if __name__ == '__main__':
+    cli()

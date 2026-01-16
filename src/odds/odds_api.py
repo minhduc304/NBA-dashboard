@@ -10,6 +10,14 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 
+class RateLimitError(Exception):
+    """Raised when API quota is exhausted or rate limited."""
+
+    def __init__(self, message: str, quota_remaining: int = 0):
+        super().__init__(message)
+        self.quota_remaining = quota_remaining
+
+
 class OddsAPI:
     """Client for The Odds API."""
 
@@ -59,6 +67,21 @@ class OddsAPI:
         # Track API quota from headers
         self._requests_remaining = response.headers.get('x-requests-remaining')
         self._requests_used = response.headers.get('x-requests-used')
+
+        # Check for rate limiting - don't retry, just fail fast
+        if response.status_code == 429:
+            remaining = int(self._requests_remaining) if self._requests_remaining else 0
+            raise RateLimitError(
+                f"API rate limited. Quota remaining: {remaining}",
+                quota_remaining=remaining
+            )
+
+        # Check if quota is exhausted (might return 401 or other error)
+        if self._requests_remaining and int(self._requests_remaining) <= 0:
+            raise RateLimitError(
+                "API quota exhausted for this month",
+                quota_remaining=0
+            )
 
         response.raise_for_status()
         return response.json()

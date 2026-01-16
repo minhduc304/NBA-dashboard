@@ -37,9 +37,10 @@ class TeamDefenseZone:
     def opp_fg_pct(self) -> float:
         return (self.opp_fgm / self.opp_fga * 100) if self.opp_fga > 0 else 0.0
     
+@dataclass
 class PlayerZones:
-    """Container for all of a player's zone data"""
-    player_id: int 
+    """Container for all of a player's zone data."""
+    player_id: int
     season: str
     shooting_zones: list[ShootingZone]
     assist_zones: list[AssistZone]

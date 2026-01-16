@@ -7,7 +7,7 @@ Fetches and stores player props from The Odds API.
 import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from .odds_api import OddsAPI
+from .odds_api import OddsAPI, RateLimitError
 
 
 # Map API market names to our stat types
@@ -102,6 +102,8 @@ class PropsScraper:
         total_props = 0
         events_scraped = 0
 
+        rate_limited = False
+
         for event in events:
             event_id = event['id']
             home_team = event['home_team']
@@ -135,11 +137,19 @@ class PropsScraper:
                     print(f"  Stored {stored} props")
                     events_scraped += 1
 
+            except RateLimitError as e:
+                print(f"\n*** RATE LIMITED: {e}")
+                print("Saving partial results and terminating...")
+                rate_limited = True
+                break
+
             except Exception as e:
                 print(f"  Error: {e}")
                 continue
 
         print(f"\nQuota remaining: {self.api.quota_remaining}")
+        if rate_limited:
+            print("*** Scraping stopped due to rate limiting ***")
         return events_scraped, total_props
 
     def _parse_event_props(

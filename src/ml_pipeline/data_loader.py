@@ -6,7 +6,8 @@ Loads and joins prop outcomes with features for model training.
 
 import sqlite3
 import pandas as pd
-from typing import Optional, List
+import numpy as np
+from typing import Optional, List, Dict
 from .config import STAT_COLUMNS, COMBO_STATS, DEFAULT_DB_PATH, CURRENT_SEASON
 
 
@@ -166,30 +167,75 @@ class PropDataLoader:
             stat_type: Type of prop to load
 
         Returns:
-            DataFrame with prop info and features (without targets)
+            DataFrame with prop info, source, and features (without targets)
         """
         stat_col = STAT_COLUMNS.get(stat_type, 'pts')
 
+        # Query all_props (underdog + prizepicks) and odds_api_props
         query = f"""
-        SELECT
-            up.full_name as player_name,
-            ps.player_id,
-            DATE(up.scheduled_at) as game_date,
-            up.stat_name as stat_type,
-            up.stat_value as line,
-            up.choice,
-            'underdog' as sportsbook,
+        WITH all_sources AS (
+            -- Underdog props
+            SELECT
+                up.full_name as player_name,
+                DATE(up.scheduled_at) as game_date,
+                up.stat_name as stat_type,
+                up.stat_value as line,
+                'underdog' as source,
+                up.american_price as over_odds,
+                (SELECT up2.american_price
+                 FROM underdog_props up2
+                 WHERE up2.full_name = up.full_name
+                 AND up2.stat_name = up.stat_name
+                 AND up2.stat_value = up.stat_value
+                 AND DATE(up2.scheduled_at) = DATE(up.scheduled_at)
+                 AND up2.choice = 'under'
+                 LIMIT 1) as under_odds
+            FROM underdog_props up
+            WHERE up.stat_name = ?
+            AND DATE(up.scheduled_at, 'localtime') = DATE('now', 'localtime')
+            AND up.choice = 'over'
 
-            -- Odds
-            up.american_price as over_odds,
-            (SELECT up2.american_price
-             FROM underdog_props up2
-             WHERE up2.full_name = up.full_name
-             AND up2.stat_name = up.stat_name
-             AND up2.stat_value = up.stat_value
-             AND DATE(up2.scheduled_at) = DATE(up.scheduled_at)
-             AND up2.choice = 'under'
-             LIMIT 1) as under_odds,
+            UNION ALL
+
+            -- PrizePicks props
+            SELECT
+                pp.full_name as player_name,
+                DATE(pp.scheduled_at) as game_date,
+                pp.stat_name as stat_type,
+                pp.stat_value as line,
+                'prizepicks' as source,
+                NULL as over_odds,
+                NULL as under_odds
+            FROM prizepicks_props pp
+            WHERE pp.stat_name = ?
+            AND DATE(pp.scheduled_at, 'localtime') = DATE('now', 'localtime')
+            AND pp.choice = 'over'
+            AND pp.prop_type = 'standard'
+
+            UNION ALL
+
+            -- Odds API props
+            SELECT
+                oap.player_name,
+                oap.game_date,
+                oap.stat_type,
+                oap.line,
+                'odds_api' as source,
+                oap.over_odds,
+                oap.under_odds
+            FROM odds_api_props oap
+            WHERE oap.stat_type = ?
+            AND oap.game_date = DATE('now', 'localtime')
+        )
+        SELECT DISTINCT
+            a.player_name,
+            COALESCE(ps.player_id, pna.player_id) as player_id,
+            a.game_date,
+            a.stat_type,
+            a.line,
+            a.source,
+            a.over_odds,
+            a.under_odds,
 
             -- Rolling stats
             prs.l5_{stat_col} as l5_stat,
@@ -203,13 +249,13 @@ class PropDataLoader:
             prs.games_in_l10,
             prs.games_in_l20
 
-        FROM underdog_props up
+        FROM all_sources a
 
         -- Match player
         LEFT JOIN player_stats ps
-            ON up.full_name = ps.player_name
+            ON a.player_name = ps.player_name
         LEFT JOIN player_name_aliases pna
-            ON up.full_name = pna.alias
+            ON a.player_name = pna.alias
 
         -- Get most recent rolling stats
         LEFT JOIN player_rolling_stats prs
@@ -219,14 +265,10 @@ class PropDataLoader:
                 FROM player_rolling_stats
                 WHERE player_id = COALESCE(ps.player_id, pna.player_id)
             )
-
-        WHERE up.stat_name = ?
-        AND DATE(up.scheduled_at) >= DATE('now')
-        AND up.choice = 'over'  -- Get unique props (over and under are same line)
         """
 
         conn = sqlite3.connect(self.db_path)
-        df = pd.read_sql_query(query, conn, params=[stat_type])
+        df = pd.read_sql_query(query, conn, params=[stat_type, stat_type, stat_type])
         conn.close()
 
         return df
@@ -364,3 +406,178 @@ class PropDataLoader:
         conn.close()
 
         return result
+
+    def get_player_vs_opponent_stats(
+        self,
+        stat_type: str,
+    ) -> pd.DataFrame:
+        """
+        Get player's historical stats against each opponent.
+
+        Returns aggregated stats for each player-opponent combination.
+
+        Args:
+            stat_type: Type of stat (points, rebounds, assists)
+
+        Returns:
+            DataFrame with player_id, opponent_abbr, and aggregated stats
+        """
+        stat_col = STAT_COLUMNS.get(stat_type, 'pts')
+
+        query = f"""
+        SELECT
+            pgl.player_id,
+            pgl.opponent_abbr,
+            COUNT(*) as games_vs_opp,
+            AVG(pgl.{stat_col}) as avg_stat_vs_opp,
+            MAX(pgl.{stat_col}) as max_stat_vs_opp,
+            MIN(pgl.{stat_col}) as min_stat_vs_opp
+        FROM player_game_logs pgl
+        WHERE pgl.min >= 10
+        GROUP BY pgl.player_id, pgl.opponent_abbr
+        HAVING games_vs_opp >= 2
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        return df
+
+    def get_player_consistency_stats(
+        self,
+        stat_type: str,
+    ) -> pd.DataFrame:
+        """
+        Get player consistency metrics from historical games.
+
+        Calculates coefficient of variation, hit rates at various lines, etc.
+
+        Args:
+            stat_type: Type of stat (points, rebounds, assists)
+
+        Returns:
+            DataFrame with player_id and consistency metrics
+        """
+        stat_col = STAT_COLUMNS.get(stat_type, 'pts')
+
+        # Get raw games first, then calculate std in Python
+        query = f"""
+        WITH player_games AS (
+            SELECT
+                player_id,
+                {stat_col} as stat_value,
+                ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) as rn
+            FROM player_game_logs
+            WHERE min >= 10
+        ),
+        recent_games AS (
+            SELECT * FROM player_games WHERE rn <= 20
+        )
+        SELECT
+            player_id,
+            COUNT(*) as consistency_sample_size,
+            AVG(stat_value) as consistency_mean,
+            MAX(stat_value) as consistency_max,
+            MIN(stat_value) as consistency_min,
+            -- Hit rates at common thresholds
+            AVG(CASE WHEN stat_value >= 10 THEN 1.0 ELSE 0.0 END) as hit_rate_10,
+            AVG(CASE WHEN stat_value >= 15 THEN 1.0 ELSE 0.0 END) as hit_rate_15,
+            AVG(CASE WHEN stat_value >= 20 THEN 1.0 ELSE 0.0 END) as hit_rate_20,
+            AVG(CASE WHEN stat_value >= 25 THEN 1.0 ELSE 0.0 END) as hit_rate_25,
+            AVG(CASE WHEN stat_value >= 30 THEN 1.0 ELSE 0.0 END) as hit_rate_30
+        FROM recent_games
+        GROUP BY player_id
+        HAVING consistency_sample_size >= 5
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        # Calculate consistency_std from range (approximate: range/4 for normal distribution)
+        df['consistency_std'] = (df['consistency_max'] - df['consistency_min']) / 4
+
+        return df
+
+    def get_opponent_stat_defense(
+        self,
+        stat_type: str,
+    ) -> pd.DataFrame:
+        """
+        Get opponent's defensive stats for the stat type.
+
+        For points: def_rating, points allowed per game
+        For rebounds: opponent rebound rates
+        For assists: assist opportunities allowed
+
+        Args:
+            stat_type: Type of stat (points, rebounds, assists)
+
+        Returns:
+            DataFrame with opponent team stats
+        """
+        stat_col = STAT_COLUMNS.get(stat_type, 'pts')
+
+        # Calculate opponent averages from game logs
+        query = f"""
+        SELECT
+            pgl.opponent_abbr,
+            AVG(pgl.{stat_col}) as opp_avg_stat_allowed
+        FROM player_game_logs pgl
+        WHERE pgl.game_date >= DATE('now', '-60 days')
+        AND pgl.min >= 15
+        GROUP BY pgl.opponent_abbr
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        return df
+
+    def get_player_play_types(self) -> pd.DataFrame:
+        """
+        Get player play type distribution.
+
+        Returns the % of each player's scoring from each play type.
+        """
+        query = f"""
+        SELECT
+            player_id,
+            play_type,
+            pct_of_total_points,
+            ppp,
+            poss_per_game
+        FROM player_play_types
+        WHERE season = '{CURRENT_SEASON}'
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        return df
+
+    def get_team_defensive_play_types(self) -> pd.DataFrame:
+        """
+        Get team defensive play type stats.
+
+        Returns how well each team defends each play type.
+        """
+        query = f"""
+        SELECT
+            t.abbreviation as team_abbr,
+            tdp.play_type,
+            tdp.ppp as def_ppp,
+            tdp.efg_pct as def_efg
+        FROM team_defensive_play_types tdp
+        JOIN teams t ON tdp.team_id = t.team_id
+        WHERE tdp.season = '{CURRENT_SEASON}'
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        return df

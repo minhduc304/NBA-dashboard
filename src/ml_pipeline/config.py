@@ -74,6 +74,44 @@ MODEL_PARAMS: Dict = {
     'classifier': CLASSIFIER_PARAMS,
 }
 
+# Path to tuned parameters
+TUNED_PARAMS_PATH = 'models/tuned_params.json'
+
+
+def get_model_params(stat_type: str, model_type: str, use_tuned: bool = True) -> Dict:
+    """
+    Get model parameters, optionally loading tuned params.
+
+    Args:
+        stat_type: Type of prop (points, rebounds, etc.)
+        model_type: 'regressor' or 'classifier'
+        use_tuned: Whether to use tuned params if available
+
+    Returns:
+        Dictionary of model parameters
+    """
+    import os
+    import json
+
+    # Start with defaults
+    if model_type == 'regressor':
+        params = REGRESSOR_PARAMS.copy()
+    else:
+        params = CLASSIFIER_PARAMS.copy()
+
+    # Try to load tuned params
+    if use_tuned and os.path.exists(TUNED_PARAMS_PATH):
+        try:
+            with open(TUNED_PARAMS_PATH, 'r') as f:
+                tuned = json.load(f)
+                if stat_type in tuned and model_type in tuned[stat_type]:
+                    tuned_params = tuned[stat_type][model_type].get('best_params', {})
+                    params.update(tuned_params)
+        except Exception:
+            pass  # Fall back to defaults
+
+    return params
+
 # Default database path
 DEFAULT_DB_PATH = 'data/nba_stats.db'
 

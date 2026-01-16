@@ -392,6 +392,92 @@ def init_database(db_path: str = 'data/nba_stats.db') -> None:
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_underdog_props_scheduled ON underdog_props(scheduled_at)')
 
     # =========================================================================
+    # PRIZEPICKS PROPS TABLE 
+    # =========================================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS prizepicks_props (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            -- Player info
+            full_name TEXT NOT NULL,
+            team_name TEXT,
+            opponent_name TEXT,
+            position_name TEXT,
+
+            -- Prop line details
+            stat_name TEXT NOT NULL,
+            stat_value REAL NOT NULL,
+            choice TEXT NOT NULL,
+
+            -- Prop type (standard, goblin, demon)
+            prop_type TEXT,
+
+            -- Game info
+            game_id TEXT,
+            scheduled_at TEXT,
+
+            -- Timestamps
+            updated_at TEXT NOT NULL,
+            scraped_at TEXT NOT NULL
+        )
+    ''')
+
+    # Index for fast lookups and duplicate detection
+    cursor.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prizepicks_props_unique
+        ON prizepicks_props(full_name, stat_name, stat_value, choice, prop_type, scheduled_at)
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_prizepicks_props_player ON prizepicks_props(full_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_prizepicks_props_stat ON prizepicks_props(stat_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_prizepicks_props_scheduled ON prizepicks_props(scheduled_at)')
+
+    # =========================================================================
+    # ALL PROPS TABLE (unified props from all sources for ML)
+    # =========================================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS all_props (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            -- Source identification
+            source TEXT NOT NULL,           -- 'underdog', 'prizepicks', 'draftkings', etc.
+
+            -- Player info
+            full_name TEXT NOT NULL,
+            team_name TEXT,
+            opponent_name TEXT,
+            position_name TEXT,
+
+            -- Prop line details
+            stat_name TEXT NOT NULL,        -- Normalized: 'points', 'rebounds', 'assists', etc.
+            stat_value REAL NOT NULL,
+            choice TEXT NOT NULL,           -- 'over' or 'under'
+
+            -- Odds (if available)
+            american_odds INTEGER,
+            decimal_odds REAL,
+
+            -- Game info
+            game_id TEXT,
+            scheduled_at TEXT,
+
+            -- Timestamps
+            updated_at TEXT NOT NULL,
+            scraped_at TEXT NOT NULL
+        )
+    ''')
+
+    # Unique index: one prop per player/stat/line/choice/source/game
+    cursor.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_all_props_unique
+        ON all_props(source, full_name, stat_name, stat_value, choice, scheduled_at)
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_all_props_source ON all_props(source)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_all_props_player ON all_props(full_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_all_props_stat ON all_props(stat_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_all_props_scheduled ON all_props(scheduled_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_all_props_game_date ON all_props(DATE(scheduled_at))')
+
+    # =========================================================================
     # PROP OUTCOMES TABLE 
     # =========================================================================
     cursor.execute('''

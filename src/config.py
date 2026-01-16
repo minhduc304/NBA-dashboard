@@ -24,7 +24,7 @@ class Config:
             db_path = os.getenv('DB_PATH', 'data/nba_stats.db'),
             api=APIConfig(
                 timeout = int(os.getenv('API_TIMEOUT', 30)),
-                delay = float(os.getenv('API_DELAY', 0,6)),
+                delay = float(os.getenv('API_DELAY', 0.6)),
             )
         )
     
