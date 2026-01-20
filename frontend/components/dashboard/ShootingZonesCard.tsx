@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 import { BasketballCourt } from './BasketballCourt';
+import { ErrorState } from '@/components/ui/error-state';
 import {
   fetchPlayerShootingZones,
   fetchTeamDefensiveZones,
@@ -26,6 +27,11 @@ export function ShootingZonesCard({
   const [zoneMatchups, setZoneMatchups] = useState<ShootingZoneMatchup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const handleRetry = useCallback(() => {
+    setRetryCount(prev => prev + 1);
+  }, []);
 
   useEffect(() => {
     async function fetchData() {
@@ -49,14 +55,14 @@ export function ShootingZonesCard({
         setZoneMatchups(combined);
       } catch (err) {
         console.error('Error fetching shooting zones:', err);
-        setError('Failed to load shooting zone data');
+        setError('Unable to load shooting zone data');
       } finally {
         setIsLoading(false);
       }
     }
 
     fetchData();
-  }, [playerId, opponentId]);
+  }, [playerId, opponentId, retryCount]);
 
   // Check if we have any data
   const hasData = zoneMatchups.some((z) => z.hasData);
@@ -76,9 +82,7 @@ export function ShootingZonesCard({
           <span className="ml-2 text-sm text-muted-foreground">Loading zones...</span>
         </div>
       ) : error ? (
-        <div className="text-center py-8 text-sm text-muted-foreground">
-          {error}
-        </div>
+        <ErrorState message={error} onRetry={handleRetry} />
       ) : !hasData ? (
         <div className="text-center py-8 text-sm text-muted-foreground">
           No shooting zone data available

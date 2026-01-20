@@ -5,6 +5,7 @@ Tracks and compares model predictions against actual outcomes.
 Helps determine which model to trust and when.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 import sqlite3
@@ -13,6 +14,8 @@ from datetime import datetime, timedelta
 from scipy import stats
 
 from .config import DEFAULT_DB_PATH
+
+logger = logging.getLogger(__name__)
 
 
 class ModelValidator:
@@ -146,20 +149,40 @@ class ModelValidator:
         for row in pending:
             pred_id, player_name, stat_type, line, gdate, reg_pred, clf_pred = row
 
-            # Look up actual outcome
+            # Normalize name for matching (remove trailing periods from Jr./Sr.)
+            normalized_name = player_name.replace('Jr.', 'Jr').replace('Sr.', 'Sr').replace('III.', 'III')
+
+            # Look up actual outcome - first try exact line match
             cursor.execute('''
-                SELECT actual_value, hit_over
+                SELECT actual_value
                 FROM prop_outcomes
-                WHERE player_name = ?
+                WHERE (player_name = ? OR player_name = ?)
                 AND stat_type = ?
                 AND line = ?
                 AND game_date = ?
                 LIMIT 1
-            ''', (player_name, stat_type, line, gdate))
+            ''', (player_name, normalized_name, stat_type, line, gdate))
 
             result = cursor.fetchone()
+
+            # If no exact match, try matching just player/stat/date
+            # (lines may differ between prediction source and outcome source)
+            if not result:
+                cursor.execute('''
+                    SELECT actual_value
+                    FROM prop_outcomes
+                    WHERE (player_name = ? OR player_name = ?)
+                    AND stat_type = ?
+                    AND game_date = ?
+                    LIMIT 1
+                ''', (player_name, normalized_name, stat_type, gdate))
+                result = cursor.fetchone()
+
             if result:
-                actual_value, hit_over = result
+                actual_value = result[0]
+
+                # Calculate hit_over based on actual vs prediction line
+                hit_over = 1 if actual_value > line else 0
 
                 # Calculate correctness
                 reg_correct = 1 if (reg_pred > line) == (hit_over == 1) else 0
@@ -517,128 +540,65 @@ class ModelValidator:
         stat_type: Optional[str] = None,
         days: Optional[int] = None,
     ):
-        """Print formatted calibration report."""
+        """Log calibration report."""
         results = self.calibration_analysis(stat_type, days)
 
         if 'error' in results:
-            print(f"Error: {results['error']}")
+            logger.error("Calibration analysis: %s", results['error'])
             return
 
-        print("\n" + "=" * 70)
-        print("PROBABILITY CALIBRATION REPORT")
-        if stat_type:
-            print(f"Stat Type: {stat_type}")
-        if days:
-            print(f"Period: Last {days} days")
-        print("=" * 70)
-
-        print(f"\nTotal Predictions: {results['total_predictions']}")
-        print(f"Mean Predicted Probability: {results['mean_predicted_prob']:.1%}")
-        print(f"Actual Over Rate: {results['actual_over_rate']:.1%}")
-
-        print("\n--- Calibration by Probability Bin ---")
-        print(f"  {'Bin':<12} {'Predicted':>10} {'Actual':>10} {'Count':>8} {'Error':>10}")
-        print("  " + "-" * 50)
-
-        for bin_data in results['bins']:
-            error_str = f"{bin_data['error']:+.1%}"
-            print(f"  {bin_data['bin']:<12} {bin_data['mean_predicted']:>9.1%} {bin_data['actual_rate']:>9.1%} {bin_data['count']:>8} {error_str:>10}")
-
-        print("\n--- Calibration Metrics ---")
-        print(f"  Expected Calibration Error (ECE): {results['expected_calibration_error']:.3f}")
-        print(f"  Brier Score: {results['brier_score']:.3f}")
-        print(f"  Overall Bias: {results['overall_bias']:+.1%}")
-
-        # Interpretation
-        print("\n--- Interpretation ---")
         ece = results['expected_calibration_error']
         bias = results['overall_bias']
 
         if ece < 0.05:
-            print("  Calibration: EXCELLENT - Probabilities are well-calibrated")
+            calibration_quality = "EXCELLENT"
         elif ece < 0.10:
-            print("  Calibration: GOOD - Minor calibration issues")
+            calibration_quality = "GOOD"
         elif ece < 0.15:
-            print("  Calibration: FAIR - Consider recalibration")
+            calibration_quality = "FAIR"
         else:
-            print("  Calibration: POOR - Probabilities are unreliable")
+            calibration_quality = "POOR"
 
-        if abs(bias) < 0.03:
-            print("  Bias: NONE - No systematic over/under prediction")
-        elif bias > 0:
-            print(f"  Bias: UNDERCONFIDENT - Model predicts lower than actual (+{bias:.1%})")
-            print(f"         Consider lowering threshold from 55% to {55 - abs(bias)*100:.0f}%")
-        else:
-            print(f"  Bias: OVERCONFIDENT - Model predicts higher than actual ({bias:.1%})")
-            print(f"         Consider raising threshold from 55% to {55 + abs(bias)*100:.0f}%")
-
-        print("\n" + "=" * 70)
+        logger.info(
+            "CALIBRATION: %d predictions, ECE=%.3f (%s), Brier=%.3f, Bias=%+.1f%%",
+            results['total_predictions'],
+            ece, calibration_quality,
+            results['brier_score'],
+            bias * 100
+        )
 
     def print_validation_report(
         self,
         stat_type: Optional[str] = None,
         days: Optional[int] = None,
     ):
-        """Print formatted validation report."""
+        """Log validation report."""
         stats = self.get_validation_stats(stat_type, days)
 
         if 'error' in stats:
-            print(f"Error: {stats['error']}")
+            logger.error("Validation: %s", stats['error'])
             return
 
-        print("\n" + "=" * 70)
-        print("MODEL VALIDATION REPORT")
-        if stat_type:
-            print(f"Stat Type: {stat_type}")
-        if days:
-            print(f"Period: Last {days} days")
-        print("=" * 70)
-
-        print(f"\nTotal Validated Predictions: {stats['total_predictions']}")
-
-        print("\n--- Accuracy Comparison ---")
-        print(f"  Regressor-based:  {stats['regressor_accuracy']:.1%}")
-        print(f"  Classifier:       {stats['classifier_accuracy']:.1%}")
         diff = stats['accuracy_difference']
-        if diff:
-            winner = "Classifier" if diff > 0 else "Regressor"
-            print(f"  Difference:       {diff:+.1%} ({winner} better)")
+        winner = "Classifier" if diff and diff > 0 else "Regressor"
 
-        print("\n--- Agreement Analysis ---")
-        print(f"  Models agree:     {stats['models_agree_rate']:.1%} of the time")
-        print(f"  When agree:       {stats['agree_count']} predictions, {stats['accuracy_when_agree']:.1%} accuracy" if stats['accuracy_when_agree'] else "  When agree:       N/A")
-        print(f"  When disagree:    {stats['disagree_count']} predictions, {stats['accuracy_when_disagree']:.1%} accuracy" if stats['accuracy_when_disagree'] else "  When disagree:    N/A")
-
-        if stats['by_stat_type']:
-            print("\n--- By Stat Type ---")
-            print(f"  {'Stat':<20} {'Total':>8} {'Reg Acc':>10} {'Clf Acc':>10} {'Agree%':>10}")
-            print("  " + "-" * 58)
-            for row in stats['by_stat_type']:
-                stat, total, reg_acc, clf_acc, agree_rate = row
-                print(f"  {stat:<20} {total:>8} {reg_acc:>9.1%} {clf_acc:>9.1%} {agree_rate:>9.1%}")
-
-        if stats['by_date']:
-            print("\n--- Recent Performance (by date) ---")
-            print(f"  {'Date':<12} {'Total':>8} {'Reg Acc':>10} {'Clf Acc':>10}")
-            print("  " + "-" * 40)
-            for row in stats['by_date'][:7]:  # Last 7 days
-                date, total, reg_acc, clf_acc = row
-                print(f"  {date:<12} {total:>8} {reg_acc:>9.1%} {clf_acc:>9.1%}")
+        logger.info(
+            "VALIDATION: %d predictions, Reg=%.1f%%, Clf=%.1f%% (%s %+.1f%%)",
+            stats['total_predictions'],
+            stats['regressor_accuracy'] * 100,
+            stats['classifier_accuracy'] * 100,
+            winner, abs(diff or 0) * 100
+        )
 
         # Statistical tests
         stat_results = self.statistical_comparison(stat_type, days)
         if 'error' not in stat_results:
-            print("\n--- Statistical Significance ---")
-            ct = stat_results['contingency_table']
-            print(f"  Both correct:      {ct['both_correct']}")
-            print(f"  Only reg correct:  {ct['reg_only_correct']}")
-            print(f"  Only clf correct:  {ct['clf_only_correct']}")
-            print(f"  Both wrong:        {ct['both_wrong']}")
-            print(f"\n  McNemar's p-value: {stat_results['mcnemar_pvalue']:.4f}")
-            print(f"  Significant diff:  {'Yes' if stat_results['mcnemar_significant'] else 'No'}")
-            print(f"\n  Recommendation:    {stat_results['recommendation']}")
-
-        print("\n" + "=" * 70)
+            logger.info(
+                "  McNemar p=%.4f (%s), Recommendation: %s",
+                stat_results['mcnemar_pvalue'],
+                "significant" if stat_results['mcnemar_significant'] else "not significant",
+                stat_results['recommendation']
+            )
 
 
 def backfill_validation_from_outcomes(
@@ -672,8 +632,8 @@ def backfill_validation_from_outcomes(
     for stat_type in stat_types:
         try:
             # Load models
-            reg_data = joblib.load(f'models/{stat_type}_regressor.joblib')
-            clf_data = joblib.load(f'models/{stat_type}_classifier.joblib')
+            reg_data = joblib.load(f'trained_models/{stat_type}_regressor.joblib')
+            clf_data = joblib.load(f'trained_models/{stat_type}_classifier.joblib')
             reg = reg_data['model']
             clf = clf_data['model']
             reg_features = reg_data['feature_columns']
@@ -746,10 +706,10 @@ def backfill_validation_from_outcomes(
             conn.commit()
             conn.close()
             results[stat_type] = logged
-            print(f"  {stat_type}: {logged} predictions logged")
+            logger.info("%s: %d predictions logged", stat_type, logged)
 
         except Exception as e:
             results[stat_type] = f"Error: {e}"
-            print(f"  {stat_type}: Error - {e}")
+            logger.error("%s: %s", stat_type, e)
 
     return results

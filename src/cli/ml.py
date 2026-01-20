@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 # Pipeline steps configuration
 PIPELINE_STEPS = {
-    'validate': 'Update pending predictions with actual outcomes',
+    'paper_update': 'Update paper trades with actual results',
     'logs': 'Collect new game logs from NBA API',
     'injuries': 'Collect current injury report',
     'features': 'Update derived features (home/away, rest days)',
@@ -16,7 +16,7 @@ PIPELINE_STEPS = {
     'props': 'Process yesterday\'s prop outcomes',
     'odds_api': 'Scrape props from Odds API',
     'pace': 'Update team pace data',
-    'predict': 'Run predictions and log for validation',
+    'paper_log': 'Log predictions for paper trading',
     'retrain': 'Check accuracy and retrain models if needed',
 }
 
@@ -45,7 +45,16 @@ def pipeline(ctx, dry_run, step):
     if step:
         steps = list(step)
     else:
-        steps = ['validate', 'logs', 'injuries', 'features', 'rolling', 'props', 'odds_api']
+        steps = [
+            'paper_update',  # Update paper trades with results
+            'logs',          # Collect game logs
+            'injuries',      # Collect injuries
+            'features',      # Update derived features
+            'rolling',       # Update rolling stats
+            'props',         # Process prop outcomes
+            'odds_api',      # Scrape today's props
+            'paper_log',     # Log paper trading predictions
+        ]
 
         # Add pace on Mondays
         if datetime.now().weekday() == 0:
@@ -107,7 +116,7 @@ def _run_pipeline_step(step: str, db_path: str):
         return collector.collect_injuries()
 
     elif step == 'features':
-        from src.feature_engineering import (
+        from src.ml_pipeline.feature_engineering import (
             add_derived_columns,
             compute_home_away_features,
             compute_rest_days_features
@@ -121,20 +130,24 @@ def _run_pipeline_step(step: str, db_path: str):
         }
 
     elif step == 'rolling':
-        from src.rolling_stats import compute_rolling_stats_incremental
+        from src.ml_pipeline.rolling_stats import compute_rolling_stats_incremental
         return compute_rolling_stats_incremental()
 
     elif step == 'props':
-        from src.prop_outcome_tracker import PropOutcomeTracker
+        from src.ml_pipeline.outcome_tracker import PropOutcomeTracker
         tracker = PropOutcomeTracker()
         yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         return tracker.process_props_for_date(yesterday)
 
     elif step == 'odds_api':
-        from src.odds import PropsScraper
+        from src.scrapers import PropsScraper
         scraper = PropsScraper(db_path=db_path)
         events, props = scraper.scrape_all_props()
-        return {'events': events, 'props': props}
+        return {
+            'events': events,
+            'props': props,
+            'credits_remaining': getattr(scraper.api, 'quota_remaining', None)
+        }
 
     elif step == 'pace':
         from src.stats_collector import NBAStatsCollector
@@ -149,6 +162,19 @@ def _run_pipeline_step(step: str, db_path: str):
         validator = ModelValidator()
         updated = validator.update_actuals()
         return {'updated': updated}
+
+    elif step == 'paper_update':
+        from src.ml_pipeline.paper_trading import PaperTrader
+        trader = PaperTrader(db_path)
+        updated = trader.update_results(verbose=False)
+        return {'updated': updated}
+
+    elif step == 'paper_log':
+        from src.ml_pipeline.paper_trading import PaperTrader
+        trader = PaperTrader(db_path)
+        results = trader.log_predictions(verbose=False)
+        total = sum(v for v in results.values() if isinstance(v, int))
+        return {'logged': total, 'by_stat': results}
 
     elif step == 'retrain':
         return _check_and_retrain()
@@ -171,7 +197,7 @@ def _run_predictions():
     results_by_stat = {}
 
     for stat_type in PRIORITY_STATS:
-        model_path = f'models/{stat_type}_classifier.joblib'
+        model_path = f'trained_models/{stat_type}_classifier.joblib'
         if not os.path.exists(model_path):
             continue
 
@@ -220,7 +246,7 @@ def _check_and_retrain():
 
     days_since_train = 999
     for stat in PRIORITY_STATS:
-        model_path = f'models/{stat}_classifier.joblib'
+        model_path = f'trained_models/{stat}_classifier.joblib'
         if os.path.exists(model_path):
             mtime = os.path.getmtime(model_path)
             days = (datetime.now().timestamp() - mtime) / 86400
@@ -297,6 +323,8 @@ def train(ctx, stat, val_days, test_days, no_save, use_tuned, list_stats):
         try:
             trainer = ModelTrainer(stat_type)
             trainer.train()
+            if not no_save:
+                trainer.save_models()
             click.echo(click.style(f"  {stat_type}: OK", fg='green'))
         except Exception as e:
             click.echo(click.style(f"  {stat_type}: FAILED - {e}", fg='red'))
@@ -340,7 +368,7 @@ def tune(ctx, stat, trials, timeout, regressor_only, classifier_only):
                 all_params[f'{stat_type}_classifier'] = clf_params
 
         save_tuned_params(all_params)
-        click.echo(click.style("\nTuning complete! Params saved to models/tuned_params.json", fg='green'))
+        click.echo(click.style("\nTuning complete! Params saved to trained_models/tuned_params.json", fg='green'))
 
     except ImportError:
         click.echo(click.style("Optuna not installed. Run: pip install optuna", fg='red'))
@@ -380,6 +408,43 @@ def validate(ctx, stat, days, summary, calibration, update):
     if stat and not summary and not calibration:
         click.echo(f"Validation report for {stat}:")
         validator.print_validation_report(stat_type=stat, days=days)
+
+
+@ml.command()
+@click.option('--stat', multiple=True, help='Specific stat(s) to evaluate')
+@click.option('--folds', default=5, help='Number of CV folds')
+@click.option('--val-days', default=2, help='Validation days per fold')
+@click.option('--test-days', default=3, help='Test days per fold')
+@click.option('--strategy', type=click.Choice(['expanding', 'sliding']), default='expanding',
+              help='CV strategy: expanding (growing train) or sliding (fixed window)')
+@click.option('--no-calibrate', is_flag=True, help='Disable probability calibration')
+@click.pass_context
+def cv(ctx, stat, folds, val_days, test_days, strategy, no_calibrate):
+    """Run time-series cross-validation for reliable performance estimates."""
+    from src.ml_pipeline.cross_validation import run_cv, run_cv_all_stats, print_cv_summary
+    from src.ml_pipeline.config import PRIORITY_STATS
+
+    stats_to_cv = list(stat) if stat else PRIORITY_STATS
+
+    click.echo("=" * 60)
+    click.echo("Time-Series Cross-Validation")
+    click.echo("=" * 60)
+    click.echo(f"Stats: {', '.join(stats_to_cv)}")
+    click.echo(f"Folds: {folds}, Strategy: {strategy}")
+    click.echo(f"Val days: {val_days}, Test days: {test_days}")
+    click.echo(f"Calibration: {'disabled' if no_calibrate else 'enabled'}")
+
+    results = run_cv_all_stats(
+        stat_types=stats_to_cv,
+        n_splits=folds,
+        val_days=val_days,
+        test_days=test_days,
+        strategy=strategy,
+        calibrate=not no_calibrate,
+        verbose=True,
+    )
+
+    print_cv_summary(results)
 
 
 @ml.command()
@@ -446,3 +511,106 @@ def predict(ctx, stat, min_confidence, show_all):
 
     except Exception as e:
         click.echo(click.style(f"Error: {e}", fg='red'))
+
+
+# =============================================================================
+# Paper Trading Commands
+# =============================================================================
+
+@ml.group()
+def paper():
+    """Paper trading commands for unbiased model evaluation.
+
+    Paper trading logs predictions BEFORE games happen, then tracks
+    results afterward. This gives truly out-of-sample performance metrics.
+
+    Daily workflow:
+      1. Before games: nba ml paper log
+      2. After games:  nba ml paper update
+      3. Weekly:       nba ml paper report
+    """
+    pass
+
+
+@paper.command('log')
+@click.option('--date', default=None, help='Date to predict for (default: today)')
+@click.option('--stat', multiple=True, help='Specific stat type(s)')
+@click.pass_context
+def paper_log(ctx, date, stat):
+    """Log predictions for upcoming games.
+
+    Run this BEFORE games start to record predictions.
+    """
+    from src.ml_pipeline.paper_trading import PaperTrader
+    from src.ml_pipeline.config import PRIORITY_STATS
+
+    trader = PaperTrader(ctx.obj['db'])
+    stat_types = list(stat) if stat else PRIORITY_STATS
+
+    results = trader.log_predictions(
+        game_date=date,
+        stat_types=stat_types,
+        verbose=True,
+    )
+
+
+@paper.command('update')
+@click.option('--date', default=None, help='Date to update (default: yesterday)')
+@click.pass_context
+def paper_update(ctx, date):
+    """Update paper trades with actual results.
+
+    Run this AFTER games complete (typically next morning).
+    """
+    from src.ml_pipeline.paper_trading import PaperTrader
+
+    trader = PaperTrader(ctx.obj['db'])
+    updated = trader.update_results(game_date=date, verbose=True)
+
+
+@paper.command('report')
+@click.option('--days', default=None, type=int, help='Last N days only')
+@click.option('--stat', default=None, help='Specific stat type')
+@click.pass_context
+def paper_report(ctx, days, stat):
+    """Show paper trading performance report.
+
+    This shows truly out-of-sample performance - only predictions
+    that were logged BEFORE games happened.
+    """
+    from src.ml_pipeline.paper_trading import PaperTrader
+
+    trader = PaperTrader(ctx.obj['db'])
+    trader.report(days=days, stat_type=stat, verbose=True)
+
+
+@paper.command('status')
+@click.pass_context
+def paper_status(ctx):
+    """Show paper trading status overview."""
+    from src.ml_pipeline.paper_trading import PaperTrader
+
+    trader = PaperTrader(ctx.obj['db'])
+    trader.status(verbose=True)
+
+    # Show pending
+    pending = trader.get_pending_count()
+    if pending:
+        click.echo("\nPending Results by Date:")
+        for date, count in sorted(pending.items()):
+            click.echo(f"  {date}: {count} predictions")
+
+
+@paper.command('run')
+@click.pass_context
+def paper_run(ctx):
+    """Run complete daily paper trading workflow.
+
+    This combines update + log into a single command:
+    1. Updates yesterday's results
+    2. Logs today's predictions
+    3. Shows status and recent performance
+    """
+    from src.ml_pipeline.paper_trading import daily_paper_trading_workflow
+
+    daily_paper_trading_workflow(db_path=ctx.obj['db'])

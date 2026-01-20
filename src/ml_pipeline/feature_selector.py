@@ -4,11 +4,14 @@ Feature Selection Module
 Provides methods to select the most important features and reduce overfitting.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from sklearn.feature_selection import SelectKBest, f_classif, f_regression
 from sklearn.feature_selection import RFE
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureSelector:
@@ -216,31 +219,16 @@ class FeatureSelector:
     def print_summary(self, all_features: List[str]):
         """Print a summary of feature selection."""
         if self.selected_features_ is None:
-            print("Selector not fitted yet.")
+            logger.warning("Selector not fitted yet.")
             return
 
-        print(f"\nFeature Selection Summary ({self.method})")
-        print("=" * 50)
-        print(f"Original features: {len(all_features)}")
-        print(f"Selected features: {len(self.selected_features_)}")
-        print(f"Removed features:  {len(all_features) - len(self.selected_features_)}")
-
-        if self.feature_importances_:
-            print("\nSelected features (by importance):")
-            sorted_imp = sorted(
-                [(f, self.feature_importances_.get(f, 0)) for f in self.selected_features_],
-                key=lambda x: x[1],
-                reverse=True
-            )
-            for name, imp in sorted_imp:
-                print(f"  {name}: {imp:.4f}")
-
-            removed = self.get_removed_features(all_features)
-            if removed:
-                print("\nRemoved features:")
-                for name in removed:
-                    imp = self.feature_importances_.get(name, 0)
-                    print(f"  {name}: {imp:.4f}")
+        logger.info(
+            "Feature Selection (%s): %d -> %d features (removed %d)",
+            self.method,
+            len(all_features),
+            len(self.selected_features_),
+            len(all_features) - len(self.selected_features_)
+        )
 
 
 def analyze_feature_importance(
@@ -266,7 +254,7 @@ def analyze_feature_importance(
     if hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
     else:
-        print("Model doesn't have feature_importances_")
+        logger.warning("Model doesn't have feature_importances_")
         return {}
 
     # Normalize
@@ -278,24 +266,19 @@ def analyze_feature_importance(
 
     result = dict(zip(features, normalized))
 
-    # Print summary
-    print(f"\nFeature Importance Analysis: {model_path}")
-    print("=" * 50)
-    print(f"Total features: {len(features)}")
-
     sorted_imp = sorted(result.items(), key=lambda x: x[1], reverse=True)
 
-    print(f"\nTop {min(top_n, len(sorted_imp))} features:")
-    for name, imp in sorted_imp[:top_n]:
-        bar = "█" * int(imp * 100)
-        print(f"  {name:30s} {imp:.4f} {bar}")
-
     # Count zero-importance features
-    zero_features = [name for name, imp in result.items() if imp == 0]
-    if zero_features:
-        print(f"\nZero-importance features ({len(zero_features)}):")
-        for name in zero_features:
-            print(f"  {name}")
+    zero_count = sum(1 for _, imp in result.items() if imp == 0)
+
+    logger.info(
+        "Feature importance (%s): %d features, top=%s (%.1f%%), %d zero-importance",
+        model_path,
+        len(features),
+        sorted_imp[0][0] if sorted_imp else "N/A",
+        sorted_imp[0][1] * 100 if sorted_imp else 0,
+        zero_count
+    )
 
     return result
 
@@ -321,9 +304,9 @@ def get_recommended_features(
     import joblib
     import os
 
-    model_path = f'models/{stat_type}_{model_type}.joblib'
+    model_path = f'trained_models/{stat_type}_{model_type}.joblib'
     if not os.path.exists(model_path):
-        print(f"Model not found: {model_path}")
+        logger.warning("Model not found: %s", model_path)
         return []
 
     data = joblib.load(model_path)

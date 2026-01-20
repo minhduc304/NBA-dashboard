@@ -79,12 +79,23 @@ class SQLitePlayerRepository(PlayerRepository):
         )
 
     def save(self, stats: PlayerStats) -> None:
-        """Save player stats to database."""
+        """Save player stats to database"""
         conn = self._get_connection()
         try:
+            # First, get existing position if player exists
+            cursor = conn.execute(
+                "SELECT position FROM player_stats WHERE player_id = ?",
+                (stats.player_id,)
+            )
+            row = cursor.fetchone()
+            existing_position = row[0] if row else None
+
+            # Use provided position, or preserve existing, or None for new players
+            position = stats.position if stats.position else existing_position
+
             conn.execute("""
                 INSERT OR REPLACE INTO player_stats (
-                    player_id, player_name, season, team_id,
+                    player_id, player_name, season, team_id, position,
                     points, assists, rebounds, threes_made, threes_attempted, fg_attempted,
                     steals, blocks, turnovers, fouls, ft_attempted,
                     pts_plus_ast, pts_plus_reb, ast_plus_reb, pts_plus_ast_plus_reb, steals_plus_blocks,
@@ -92,7 +103,7 @@ class SQLitePlayerRepository(PlayerRepository):
                     q1_points, q1_assists, q1_rebounds, first_half_points,
                     games_played, last_updated
                 ) VALUES (
-                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
@@ -101,7 +112,7 @@ class SQLitePlayerRepository(PlayerRepository):
                     ?, CURRENT_TIMESTAMP
                 )
             """, (
-                stats.player_id, stats.player_name, stats.season, stats.team_id,
+                stats.player_id, stats.player_name, stats.season, stats.team_id, position,
                 stats.points, stats.assists, stats.rebounds, stats.threes_made, stats.threes_attempted, stats.fg_attempted,
                 stats.steals, stats.blocks, stats.turnovers, stats.fouls, stats.ft_attempted,
                 stats.pts_plus_ast, stats.pts_plus_reb, stats.ast_plus_reb, stats.pts_plus_ast_plus_reb, stats.steals_plus_blocks,

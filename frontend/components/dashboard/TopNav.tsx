@@ -1,19 +1,34 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { Newspaper, User } from 'lucide-react';
+import { Newspaper, User, Menu, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
 
 const leagues = [
   { name: 'NBA', active: true, beta: false }
 ];
 
-export function TopNav() {
+interface TopNavProps {
+  onMenuToggle?: () => void;
+  isSidebarOpen?: boolean;
+}
+
+export function TopNav({ onMenuToggle, isSidebarOpen }: TopNavProps) {
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 h-14 bg-background/95 backdrop-blur-sm border-b border-border">
-      <div className="flex items-center justify-between h-full px-4">
-        {/* Left: League Tabs */}
-        <div className="flex items-center gap-1">
+    <TooltipProvider>
+      <nav className="fixed top-0 left-0 right-0 z-50 h-14 bg-background/95 backdrop-blur-sm border-b border-border">
+        <div className="flex items-center justify-between h-full px-4">
+          {/* Left: Mobile Menu + League Tabs */}
+          <div className="flex items-center gap-1">
+            {/* Mobile hamburger menu */}
+            <button
+              onClick={onMenuToggle}
+              className="lg:hidden p-2 -ml-2 mr-1 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+              aria-label={isSidebarOpen ? "Close menu" : "Open menu"}
+            >
+              {isSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
           {leagues.map((league) => (
             <button
               key={league.name}
@@ -47,16 +62,27 @@ export function TopNav() {
 
         {/* Right: Actions */}
         <div className="flex items-center gap-3">
-          <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground">
-            <Newspaper className="w-5 h-5" />
-          </button>
-          <button className="p-2 rounded-lg hover:bg-secondary transition-colors">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center">
-              <User className="w-4 h-4 text-primary-foreground" />
-            </div>
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground">
+                <Newspaper className="w-5 h-5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>News</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className="p-2 rounded-lg hover:bg-secondary transition-colors">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center">
+                  <User className="w-4 h-4 text-primary-foreground" />
+                </div>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Profile</TooltipContent>
+          </Tooltip>
         </div>
-      </div>
-    </nav>
+        </div>
+      </nav>
+    </TooltipProvider>
   );
 }

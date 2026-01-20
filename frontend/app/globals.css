@@ -5,6 +5,10 @@
 
 /* Dark-only NBA Props Dashboard Theme */
 :root {
+  /* Layout dimensions */
+  --sidebar-width: 400px;
+  --topnav-height: 56px;
+
   /* Core backgrounds - very dark */
   --background: oklch(0.07 0.005 285);
   --foreground: oklch(0.95 0.01 250);
@@ -170,6 +174,19 @@
 
 .glow-blue {
   box-shadow: 0 0 20px oklch(0.65 0.20 250 / 0.3);
+}
+
+/* Responsive layout adjustments */
+@media (max-width: 1024px) {
+  :root {
+    --sidebar-width: 320px;
+  }
+}
+
+@media (max-width: 768px) {
+  :root {
+    --sidebar-width: 100vw;
+  }
 }
 
 /* Noise texture overlay */

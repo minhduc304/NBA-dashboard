@@ -274,9 +274,11 @@ function MatchupCard({ game, homePlayers, awayPlayers, isExpanded, onToggle, sel
 interface SidebarProps {
   selectedPlayer: Player | null;
   onPlayerSelect: (player: Player) => void;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
-export function Sidebar({ selectedPlayer, onPlayerSelect }: SidebarProps) {
+export function Sidebar({ selectedPlayer, onPlayerSelect, isOpen = false, onClose }: SidebarProps) {
   const [expandedGames, setExpandedGames] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [games, setGames] = useState<GameMatchup[]>([]);
@@ -400,7 +402,15 @@ export function Sidebar({ selectedPlayer, onPlayerSelect }: SidebarProps) {
   }, [games]);
 
   return (
-    <aside className="fixed left-0 top-14 bottom-0 w-[400px] bg-sidebar border-r border-sidebar-border flex flex-col">
+    <aside className={cn(
+      "fixed top-14 bottom-0 bg-sidebar border-r border-sidebar-border flex flex-col z-40",
+      "w-[var(--sidebar-width)] left-0",
+      "transition-transform duration-300 ease-in-out",
+      // Desktop: always visible
+      "lg:translate-x-0",
+      // Mobile: slide in/out based on isOpen
+      isOpen ? "translate-x-0" : "max-lg:-translate-x-full"
+    )}>
       {/* Header Filters */}
       <div className="p-4 space-y-3 border-b border-sidebar-border">
         <div className="flex gap-2">

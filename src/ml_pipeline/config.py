@@ -75,7 +75,7 @@ MODEL_PARAMS: Dict = {
 }
 
 # Path to tuned parameters
-TUNED_PARAMS_PATH = 'models/tuned_params.json'
+TUNED_PARAMS_PATH = 'trained_models/tuned_params.json'
 
 
 def get_model_params(stat_type: str, model_type: str, use_tuned: bool = True) -> Dict:
@@ -112,11 +112,11 @@ def get_model_params(stat_type: str, model_type: str, use_tuned: bool = True) ->
 
     return params
 
-# Default database path
-DEFAULT_DB_PATH = 'data/nba_stats.db'
+# Import centralized database path configuration
+from src.config import get_db_path, DEFAULT_DB_PATH
 
 # Default model directory
-DEFAULT_MODEL_DIR = 'models/'
+DEFAULT_MODEL_DIR = 'trained_models/'
 
 # Current season
 CURRENT_SEASON = '2025-26'
@@ -125,5 +125,13 @@ CURRENT_SEASON = '2025-26'
 MIN_SAMPLES = 100
 
 # Validation/Test split - number of days to hold out
-DEFAULT_VAL_DAYS = 2   # For early stopping (validation)
-DEFAULT_TEST_DAYS = 2  # For final evaluation (test)
+# Note: val_days + test_days must be < total days in prop_outcomes table
+# Currently ~21 days of prop data available, so using conservative values
+# As more data accumulates, increase these for more reliable estimates
+DEFAULT_VAL_DAYS = 3    # For early stopping (validation) + calibration
+DEFAULT_TEST_DAYS = 7   # For final evaluation (test) - ~200+ samples
+
+# Probability calibration settings
+# Calibration improves predicted probability reliability for bet sizing
+DEFAULT_CALIBRATE = True
+DEFAULT_CALIBRATION_METHOD = 'isotonic'  # 'isotonic' (flexible) or 'sigmoid' (Platt scaling)

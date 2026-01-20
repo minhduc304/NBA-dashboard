@@ -1,5 +1,6 @@
 """Player Stats Collector - Collects player season statistics."""
 
+import logging
 from typing import Optional, Dict, Set
 from datetime import datetime
 import time
@@ -11,6 +12,8 @@ from ..db.player import PlayerRepository
 from ..db.game import GameLogRepository
 from ..api.client import NBAApiClient
 from ..api.retry import RetryStrategy
+
+logger = logging.getLogger(__name__)
 
 
 class PlayerStatsCollector(BaseCollector):
@@ -72,11 +75,11 @@ class PlayerStatsCollector(BaseCollector):
         # Step 3: Fetch first half stats
         first_half_stats = self._fetch_half_stats(player_id, "First Half")
 
-        # Step 4: Get team ID
-        team_id = self._fetch_team_id(player_id)
+        # Step 4: Get team ID and position
+        team_id, position = self._fetch_team_id_and_position(player_id)
 
         # Step 5: Build PlayerStats model
-        stats = self._build_player_stats(row, player_id, team_id, q1_stats, first_half_stats)
+        stats = self._build_player_stats(row, player_id, team_id, position, q1_stats, first_half_stats)
 
         # Step 6: Save to repository
         self.repository.save(stats)
@@ -100,8 +103,8 @@ class PlayerStatsCollector(BaseCollector):
             )
             if df is not None and not df.empty:
                 return df.iloc[0].to_dict()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Error fetching period %d stats for player %d: %s", period, player_id, e)
         return None
 
     def _fetch_half_stats(self, player_id: int, game_segment: str) -> Optional[Dict]:
@@ -112,28 +115,31 @@ class PlayerStatsCollector(BaseCollector):
             )
             if df is not None and not df.empty:
                 return df.iloc[0].to_dict()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Error fetching %s stats for player %d: %s", game_segment, player_id, e)
         return None
 
-    def _fetch_team_id(self, player_id: int) -> Optional[int]:
-        """Fetch current team ID for player."""
+    def _fetch_team_id_and_position(self, player_id: int) -> tuple[Optional[int], Optional[str]]:
+        """Fetch current team ID and position for player."""
         try:
             df = self._fetch_with_retry(
                 lambda: self.api_client.get_player_info(player_id)
             )
             if df is not None and not df.empty:
-                team_id = df.iloc[0].get('TEAM_ID')
-                return int(team_id) if team_id else None
-        except Exception:
-            pass
-        return None
+                row = df.iloc[0]
+                team_id = row.get('TEAM_ID')
+                position = row.get('POSITION', '')
+                return (int(team_id) if team_id else None, position if position else None)
+        except Exception as e:
+            logger.debug("Error fetching team ID/position for player %d: %s", player_id, e)
+        return None, None
 
     def _build_player_stats(
         self,
         row,
         player_id: int,
         team_id: Optional[int],
+        position: Optional[str],
         q1_stats: Optional[Dict],
         first_half_stats: Optional[Dict]
     ) -> PlayerStats:
@@ -151,6 +157,7 @@ class PlayerStatsCollector(BaseCollector):
             season=self.season,
             games_played=int(row.get('GP', 0)),
             team_id=team_id,
+            position=position,
 
             # Basic stats
             points=points,
@@ -302,28 +309,22 @@ class RosterCollector:
         all_teams = teams.get_teams()
         rostered_players: Set[int] = set()
 
-        print(f"Fetching rosters for {len(all_teams)} teams...")
+        logger.info("Fetching rosters for %d teams...", len(all_teams))
 
         for i, team in enumerate(all_teams, 1):
             team_id = team['id']
-            team_abbr = team['abbreviation']
-
-            print(f"  [{i}/{len(all_teams)}] {team_abbr}...", end=" ")
 
             try:
                 df = self.api_client.get_team_roster(team_id, self.season)
                 if not df.empty:
                     player_ids = df['PLAYER_ID'].tolist()
                     rostered_players.update(player_ids)
-                    print(f"{len(player_ids)} players")
-                else:
-                    print("No roster")
             except Exception as e:
-                print(f"Error: {e}")
+                logger.warning("Error fetching roster for team %d: %s", team_id, e)
 
             if i < len(all_teams):
                 time.sleep(self.delay)
 
-        print(f"Found {len(rostered_players)} rostered players\n")
+        logger.info("Found %d rostered players", len(rostered_players))
         self._cached_ids = rostered_players
         return rostered_players

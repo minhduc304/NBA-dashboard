@@ -1,11 +1,13 @@
 """
 ML Models for Prop Predictions
 
-LightGBM regressor and XGBoost classifier wrappers.
+LightGBM regressor and XGBoost classifier wrappers with probability calibration.
 """
 
 import numpy as np
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Literal
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from .config import REGRESSOR_PARAMS, CLASSIFIER_PARAMS
 
 
@@ -99,7 +101,7 @@ class PropRegressor:
 
 
 class PropClassifier:
-    """XGBoost classifier for predicting over/under."""
+    """XGBoost classifier for predicting over/under with optional probability calibration."""
 
     def __init__(self, **params):
         """
@@ -116,6 +118,8 @@ class PropClassifier:
             self.params = {**CLASSIFIER_PARAMS, **params}
         self.model = None
         self.feature_names_ = None
+        self._calibrator = None
+        self._calibration_method = None
 
     def fit(
         self,
@@ -176,6 +180,8 @@ class PropClassifier:
         """
         Predict class probabilities.
 
+        Uses calibrated probabilities if calibration has been applied.
+
         Args:
             X: Features
 
@@ -184,7 +190,58 @@ class PropClassifier:
         """
         if self.model is None:
             raise ValueError("Model not trained. Call fit() first.")
+
+        # Use calibrator if available
+        if self._calibrator is not None:
+            return self._calibrator.predict_proba(X)
+
         return self.model.predict_proba(X)
+
+    def calibrate(
+        self,
+        X_cal: np.ndarray,
+        y_cal: np.ndarray,
+        method: Literal['isotonic', 'sigmoid'] = 'isotonic',
+    ) -> 'PropClassifier':
+        """
+        Calibrate predicted probabilities using a held-out calibration set.
+
+        Uses sklearn's CalibratedClassifierCV with cv='prefit' to calibrate
+        the already-fitted model. Isotonic regression is more flexible but
+        needs more data; sigmoid (Platt scaling) is better for small datasets.
+
+        Args:
+            X_cal: Calibration features (should be held-out data, e.g., validation set)
+            y_cal: Calibration targets (0=under, 1=over)
+            method: 'isotonic' (more flexible) or 'sigmoid' (Platt scaling)
+
+        Returns:
+            self (for chaining)
+        """
+        if self.model is None:
+            raise ValueError("Model not trained. Call fit() first.")
+
+        # Use FrozenEstimator (sklearn >= 1.6) instead of deprecated cv='prefit'
+        # FrozenEstimator wraps a fitted estimator, allowing calibration without refitting
+        # Note: cv parameter is omitted - FrozenEstimator handles the pre-fitted case
+        self._calibrator = CalibratedClassifierCV(
+            estimator=FrozenEstimator(self.model),
+            method=method,
+        )
+        self._calibrator.fit(X_cal, y_cal)
+        self._calibration_method = method
+
+        return self
+
+    @property
+    def is_calibrated(self) -> bool:
+        """Check if the classifier has been calibrated."""
+        return self._calibrator is not None
+
+    @property
+    def calibration_method(self) -> Optional[str]:
+        """Get the calibration method used, if any."""
+        return self._calibration_method
 
     @property
     def feature_importances_(self) -> np.ndarray:

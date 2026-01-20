@@ -4,6 +4,7 @@ Prop Predictor for Inference
 Generate predictions for upcoming props using trained models.
 """
 
+import logging
 import os
 import joblib
 import numpy as np
@@ -11,6 +12,8 @@ import pandas as pd
 from typing import Dict, Optional, List
 
 from .config import DEFAULT_DB_PATH, DEFAULT_MODEL_DIR
+
+logger = logging.getLogger(__name__)
 from .features import FeatureEngineer
 from .data_loader import PropDataLoader
 
@@ -257,7 +260,7 @@ def get_daily_predictions(
             all_predictions.append(predictions)
 
         except Exception as e:
-            print(f"Error predicting {stat_type}: {e}")
+            logger.error("Error predicting %s: %s", stat_type, e)
 
     if not all_predictions:
         return pd.DataFrame()

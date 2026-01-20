@@ -4,12 +4,15 @@ Hyperparameter Tuning with Optuna
 Optimizes LightGBM regressor and XGBoost classifier parameters.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional, Tuple, Callable
 from datetime import datetime
 
 import optuna
+
+logger = logging.getLogger(__name__)
 from optuna.samplers import TPESampler
 from sklearn.metrics import mean_absolute_error, roc_auc_score, accuracy_score
 
@@ -55,7 +58,6 @@ class HyperparameterTuner:
     def _load_regressor_data(self, val_days: int = 15, test_days: int = 30) -> Tuple:
         """Load and split historical data for regressor tuning."""
         if self._hist_df is None:
-            print(f"Loading historical games for {self.stat_type}...")
             self._hist_df = self.data_loader.load_historical_games(self.stat_type)
             self._hist_df = self.feature_engineer.engineer_features(self._hist_df)
 
@@ -86,7 +88,6 @@ class HyperparameterTuner:
     def _load_classifier_data(self, val_days: int = 2, test_days: int = 2) -> Tuple:
         """Load and split prop outcome data for classifier tuning."""
         if self._clf_df is None:
-            print(f"Loading prop outcomes for {self.stat_type}...")
             self._clf_df = self.data_loader.load_training_data(self.stat_type)
             self._clf_df = self.feature_engineer.engineer_features(self._clf_df)
 
@@ -139,10 +140,10 @@ class HyperparameterTuner:
             val_days, test_days
         )
 
-        print(f"\nTuning regressor for {self.stat_type}")
-        print(f"  Train: {len(X_train):,} samples")
-        print(f"  Val:   {len(X_val):,} samples")
-        print(f"  Test:  {len(X_test):,} samples")
+        logger.info(
+            "Tuning regressor for %s (train=%d, val=%d, test=%d)",
+            self.stat_type, len(X_train), len(X_val), len(X_test)
+        )
 
         def objective(trial: optuna.Trial) -> float:
             params = {
@@ -210,9 +211,10 @@ class HyperparameterTuner:
         val_mae = mean_absolute_error(y_val, val_pred)
         test_mae = mean_absolute_error(y_test, test_pred)
 
-        print(f"\nBest trial: {study.best_trial.number}")
-        print(f"  Val MAE:  {val_mae:.3f}")
-        print(f"  Test MAE: {test_mae:.3f}")
+        logger.info(
+            "Regressor %s best trial #%d: Val MAE=%.3f, Test MAE=%.3f",
+            self.stat_type, study.best_trial.number, val_mae, test_mae
+        )
 
         return {
             'best_params': best_params,
@@ -250,10 +252,10 @@ class HyperparameterTuner:
             val_days, test_days
         )
 
-        print(f"\nTuning classifier for {self.stat_type}")
-        print(f"  Train: {len(X_train):,} samples")
-        print(f"  Val:   {len(X_val):,} samples")
-        print(f"  Test:  {len(X_test):,} samples")
+        logger.info(
+            "Tuning classifier for %s (train=%d, val=%d, test=%d)",
+            self.stat_type, len(X_train), len(X_val), len(X_test)
+        )
 
         def objective(trial: optuna.Trial) -> float:
             params = {
@@ -335,11 +337,12 @@ class HyperparameterTuner:
             'study': study,
         }
 
-        print(f"\nBest trial: {study.best_trial.number}")
-        print(f"  Val AUC:      {results['val_auc']:.3f}")
-        print(f"  Test AUC:     {results['test_auc']:.3f}")
-        print(f"  Val Accuracy: {results['val_accuracy']:.1%}")
-        print(f"  Test Accuracy:{results['test_accuracy']:.1%}")
+        logger.info(
+            "Classifier %s best trial #%d: Val AUC=%.3f, Test AUC=%.3f, Val Acc=%.1f%%, Test Acc=%.1f%%",
+            self.stat_type, study.best_trial.number,
+            results['val_auc'], results['test_auc'],
+            results['val_accuracy'] * 100, results['test_accuracy'] * 100
+        )
 
         return results
 
@@ -398,7 +401,7 @@ def save_tuned_params(results: Dict, output_path: str = 'models/tuned_params.jso
     with open(output_path, 'w') as f:
         json.dump(serializable, f, indent=2)
 
-    print(f"\nSaved tuned parameters to {output_path}")
+    logger.info("Saved tuned parameters to %s", output_path)
 
 
 def load_tuned_params(input_path: str = 'models/tuned_params.json') -> Optional[Dict]:
@@ -439,17 +442,15 @@ def tune_all_models(
     all_results = {}
 
     for stat_type in stat_types:
-        print(f"\n{'='*60}")
-        print(f"Tuning {stat_type.upper()}")
-        print('='*60)
+        logger.info("Tuning %s...", stat_type.upper())
 
         try:
             tuner = HyperparameterTuner(stat_type, db_path)
             results = tuner.tune_both(n_trials=n_trials, timeout=timeout)
             all_results[stat_type] = results
-            print(f"\n[OK] {stat_type} tuning complete")
+            logger.info("%s tuning complete", stat_type)
         except Exception as e:
-            print(f"\n[ERROR] {stat_type}: {e}")
+            logger.error("%s tuning failed: %s", stat_type, e)
             all_results[stat_type] = {'error': str(e)}
 
     # Save results

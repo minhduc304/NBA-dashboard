@@ -4,8 +4,12 @@ NBA Stats Collector
 Thin orchestration layer that delegates to specialized collectors.
 """
 
+import logging
 from typing import Dict, Optional, List, Set
 import time
+import sqlite3
+from nba_api.stats.static import players
+from nba_api.stats.endpoints import commonplayerinfo, playergamelogs
 
 from .config import Config
 from .api.client import ProductionNBAApiClient
@@ -16,12 +20,15 @@ from .collectors import (
     PlayerStatsCollector,
     RosterCollector,
     ShootingZoneCollector,
+    AssistZoneCollector,
     TeamDefenseCollector,
     TeamPaceCollector,
     PlayTypesCollector,
     TeamDefensivePlayTypesCollector,
     InjuriesCollector,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class NBAStatsCollector:
@@ -63,6 +70,7 @@ class NBAStatsCollector:
         # Initialize collectors (lazily created)
         self._player_stats_collector: Optional[PlayerStatsCollector] = None
         self._shooting_zone_collector: Optional[ShootingZoneCollector] = None
+        self._assist_zone_collector: Optional[AssistZoneCollector] = None
         self._team_defense_collector: Optional[TeamDefenseCollector] = None
         self._roster_collector: Optional[RosterCollector] = None
 
@@ -71,7 +79,7 @@ class NBAStatsCollector:
 
     def _init_database(self):
         """Initialize the database schema."""
-        from .init_db import init_database
+        from .db.init_db import init_database
         init_database(self.db_path)
 
     ### getters
@@ -99,6 +107,17 @@ class NBAStatsCollector:
         return self._shooting_zone_collector
 
     @property
+    def assist_zone_collector(self) -> AssistZoneCollector:
+        if self._assist_zone_collector is None:
+            self._assist_zone_collector = AssistZoneCollector(
+                repository=self._zone_repo,
+                api_client=self._api_client,
+                season=self.SEASON,
+                retry_strategy=self._retry_strategy,
+            )
+        return self._assist_zone_collector
+
+    @property
     def team_defense_collector(self) -> TeamDefenseCollector:
         if self._team_defense_collector is None:
             self._team_defense_collector = TeamDefenseCollector(
@@ -118,7 +137,7 @@ class NBAStatsCollector:
             )
         return self._roster_collector
 
-    # Public API 
+    # Public API
 
     def collect_player_stats(self, player_name: str, collect_shooting_zones: bool = True) -> Optional[Dict]:
         """
@@ -131,11 +150,9 @@ class NBAStatsCollector:
         Returns:
             Dictionary of stats or None if player not found
         """
-        from nba_api.stats.static import players
-
         player_dict = players.find_players_by_full_name(player_name)
         if not player_dict:
-            print(f"Player '{player_name}' not found")
+            logger.warning("Player '%s' not found", player_name)
             return None
 
         player_id = player_dict[0]['id']
@@ -143,7 +160,7 @@ class NBAStatsCollector:
         # Collect player stats
         result = self.player_stats_collector.collect(player_id)
         if not result.is_success:
-            print(f"Error: {result.message}")
+            logger.error("Failed to collect stats for %s: %s", player_name, result.message)
             return None
 
         stats = result.data.to_dict()
@@ -212,6 +229,34 @@ class NBAStatsCollector:
         result = collector.collect_by_name(player_name, force=force)
         return result.is_success
 
+    def collect_player_assist_zones(self, player_name: str, delay: float = 0.6) -> bool:
+        """Collect assist zone statistics for a player by analyzing play-by-play data."""
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            logger.warning("Player '%s' not found", player_name)
+            return False
+
+        player_id = player_dict[0]['id']
+
+        # Get player's team ID for accurate assist matching
+        try:
+            info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
+            team_id = info.get_data_frames()[0].iloc[0]['TEAM_ID']
+        except Exception as e:
+            logger.warning("Could not get team ID for player %s: %s", player_name, e)
+            team_id = None
+
+        # Create a new collector with the specified delay
+        collector = AssistZoneCollector(
+            repository=self._zone_repo,
+            api_client=self._api_client,
+            season=self.SEASON,
+            retry_strategy=self._retry_strategy,
+            delay=delay,
+        )
+        result = collector.collect(player_id, player_name=player_name, team_id=team_id)
+        return result.is_success
+
     def collect_all_team_defensive_play_types(self, delay: float = 0.8, force: bool = False) -> Dict[str, int]:
         """Collect defensive play types for all teams."""
         collector = TeamDefensivePlayTypesCollector(
@@ -271,12 +316,16 @@ class NBAStatsCollector:
         )
 
         self._player_repo.save(player_stats)
-        print(f"Saved stats for {stats['player_name']} to database")
+        logger.info("Saved stats for %s to database", stats['player_name'])
 
     def update_all_players(self, delay: float = 0.6, only_existing: bool = True,
                           rostered_only: bool = False, add_new_only: bool = False):
         """
         Update stats for all players in the database.
+
+        Uses game_logs table to pre-filter players needing updates - this provides
+        automatic checkpoint/resume behavior. If collection is interrupted, running
+        again will only process players who still need updates.
 
         Args:
             delay: Delay between API calls
@@ -284,42 +333,124 @@ class NBAStatsCollector:
             rostered_only: If True, only collect for rostered players
             add_new_only: If True, only add new players not in DB
         """
-        from nba_api.stats.static import players
-        import sqlite3
+        logger.info("Starting update for %s season...", self.SEASON)
 
-        print(f"Starting update for {self.SEASON} season...")
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT player_id FROM player_stats")
+        existing_ids = {row[0] for row in cursor.fetchall()}
+        total_in_db = len(existing_ids)
 
         if add_new_only:
+            # Only add players not already in database
+            conn.close()
             all_players = players.get_active_players()
 
             if rostered_only:
                 rostered_ids = self.get_rostered_player_ids()
                 all_players = [p for p in all_players if p['id'] in rostered_ids]
 
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT player_id FROM player_stats")
-            existing_ids = {row[0] for row in cursor.fetchall()}
+            players_to_update = [p for p in all_players if p['id'] not in existing_ids]
+            skipped_existing = len(all_players) - len(players_to_update)
+            logger.info("Found %d active players: %d in DB (skipping), %d new",
+                       len(all_players), skipped_existing, len(players_to_update))
+
+        elif only_existing:
+            # Use game_logs to find players with new games since last update
+            cursor.execute("""
+                SELECT DISTINCT ps.player_id, ps.player_name, ps.games_played,
+                       COUNT(pgl.game_id) as new_games_count
+                FROM player_stats ps
+                INNER JOIN player_game_logs pgl ON ps.player_id = pgl.player_id
+                WHERE pgl.game_date > DATE(ps.last_updated)
+                GROUP BY ps.player_id
+                HAVING new_games_count > 0
+                ORDER BY ps.player_name
+            """)
+            players_needing_update = cursor.fetchall()
             conn.close()
 
+            skipped_uptodate = total_in_db - len(players_needing_update)
+
+            if len(players_needing_update) == 0:
+                logger.info("All %d players are up to date (no new games in game_logs)", total_in_db)
+                return
+
+            logger.info("Found %d players in database: %d up-to-date, %d need updates",
+                       total_in_db, skipped_uptodate, len(players_needing_update))
+            players_to_update = [
+                {'id': row[0], 'full_name': row[1], 'old_gp': row[2], 'new_games': row[3]}
+                for row in players_needing_update
+            ]
+
+        else:
+            # Update existing (via game_logs) + add new players
+            cursor.execute("""
+                SELECT DISTINCT ps.player_id, ps.player_name, ps.games_played,
+                       COUNT(pgl.game_id) as new_games_count
+                FROM player_stats ps
+                INNER JOIN player_game_logs pgl ON ps.player_id = pgl.player_id
+                WHERE pgl.game_date > DATE(ps.last_updated)
+                GROUP BY ps.player_id
+                HAVING new_games_count > 0
+            """)
+            existing_needing_update = {row[0]: {'name': row[1], 'old_gp': row[2], 'new_games': row[3]}
+                                       for row in cursor.fetchall()}
+            conn.close()
+
+            all_players = players.get_active_players()
+            if rostered_only:
+                rostered_ids = self.get_rostered_player_ids()
+                all_players = [p for p in all_players if p['id'] in rostered_ids]
+
+            # Build list: existing players needing updates + new players
+            players_to_update = []
+            for player_id, info in existing_needing_update.items():
+                players_to_update.append({
+                    'id': player_id,
+                    'full_name': info['name'],
+                    'is_new': False,
+                    'old_gp': info['old_gp'],
+                    'new_games': info['new_games']
+                })
+
             new_players = [p for p in all_players if p['id'] not in existing_ids]
-            total = len(new_players)
+            for p in new_players:
+                players_to_update.append({'id': p['id'], 'full_name': p['full_name'], 'is_new': True})
 
-            print(f"Found {total} new players to add")
+            skipped_uptodate = len(existing_ids) - len(existing_needing_update)
+            logger.info("Found %d active players: %d in DB (%d need updates), %d new",
+                       len(all_players), len(existing_ids), len(existing_needing_update), len(new_players))
 
-            for i, player in enumerate(new_players, 1):
-                print(f"[{i}/{total}] {player['full_name']}...", end=" ")
-                result = self.player_stats_collector.collect(player['id'])
+        total = len(players_to_update)
+        if total == 0:
+            logger.info("No players to process")
+            return
+
+        updated = 0
+        skipped = 0
+        errors = 0
+
+        for i, player in enumerate(players_to_update, 1):
+            player_id = player['id'] if isinstance(player, dict) else player
+
+            try:
+                result = self.player_stats_collector.collect(player_id)
 
                 if result.is_success:
-                    print(f"Added (GP: {result.data.games_played})")
+                    updated += 1
+                elif result.is_skipped:
+                    skipped += 1
                 else:
-                    print(f"Skipped ({result.message})")
+                    errors += 1
+            except Exception as e:
+                logger.error("Error collecting player %s: %s", player_id, e)
+                errors += 1
 
-                if i < total:
-                    time.sleep(delay)
+            if i < total:
+                time.sleep(delay)
 
-        print(f"Update complete!")
+        logger.info("Update complete! Updated: %d, Skipped: %d, Errors: %d", updated, skipped, errors)
 
     def collect_all_game_logs(self) -> Dict[str, int]:
         """
@@ -327,10 +458,7 @@ class NBAStatsCollector:
 
         Uses PlayerGameLogs endpoint for efficiency (one call vs 500+ per-player calls).
         """
-        from nba_api.stats.endpoints import playergamelogs
-        import sqlite3
-
-        print(f"Fetching all player game logs for {self.SEASON} season...")
+        logger.info("Fetching all player game logs for %s season...", self.SEASON)
 
         try:
             response = playergamelogs.PlayerGameLogs(
@@ -341,10 +469,10 @@ class NBAStatsCollector:
             df = response.get_data_frames()[0]
 
             if df.empty:
-                print("No game logs found.")
+                logger.warning("No game logs found")
                 return {'inserted': 0, 'skipped': 0}
 
-            print(f"Fetched {len(df)} game log entries from API.")
+            logger.info("Fetched %d game log entries from API", len(df))
 
             # Rename columns to match database schema
             column_mapping = {
@@ -393,9 +521,9 @@ class NBAStatsCollector:
             inserted = count_after - count_before
             skipped = len(df) - inserted
 
-            print(f"Game logs: {inserted} inserted, {skipped} skipped (already exist)")
+            logger.info("Game logs: %d inserted, %d skipped (already exist)", inserted, skipped)
             return {'inserted': inserted, 'skipped': skipped}
 
         except Exception as e:
-            print(f"Error collecting game logs: {e}")
+            logger.error("Error collecting game logs: %s", e)
             return {'inserted': 0, 'skipped': 0}

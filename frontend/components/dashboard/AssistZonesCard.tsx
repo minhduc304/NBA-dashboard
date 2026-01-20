@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 import { AssistZonesCourt } from './AssistZonesCourt';
+import { ErrorState } from '@/components/ui/error-state';
 import {
   fetchAssistZoneMatchup,
   ApiAssistZoneMatchupResponse,
@@ -23,6 +24,11 @@ export function AssistZonesCard({
   const [data, setData] = useState<ApiAssistZoneMatchupResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const handleRetry = useCallback(() => {
+    setRetryCount(prev => prev + 1);
+  }, []);
 
   useEffect(() => {
     async function fetchData() {
@@ -39,14 +45,14 @@ export function AssistZonesCard({
         setData(matchupData);
       } catch (err) {
         console.error('Error fetching assist zone data:', err);
-        setError('Failed to load assist zone data');
+        setError('Unable to load assist zone data');
       } finally {
         setIsLoading(false);
       }
     }
 
     fetchData();
-  }, [playerId, opponentId]);
+  }, [playerId, opponentId, retryCount]);
 
   // Check if we have any data
   const hasData = data && data.zones.length > 0 && data.zones.some((z) => z.hasData);
@@ -66,9 +72,7 @@ export function AssistZonesCard({
           <span className="ml-2 text-sm text-muted-foreground">Loading zones...</span>
         </div>
       ) : error ? (
-        <div className="text-center py-8 text-sm text-muted-foreground">
-          {error}
-        </div>
+        <ErrorState message={error} onRetry={handleRetry} />
       ) : !hasData ? (
         <div className="text-center py-8 text-sm text-muted-foreground">
           No assist zone data available

@@ -46,7 +46,13 @@ def update(ctx, name, collect_zones, collect_play_types):
 @click.option('--add-new-only', is_flag=True, help='Only add new players, skip existing')
 @click.pass_context
 def update_all(ctx, include_new, add_new_only):
-    """Update stats for all players in database."""
+    """Update stats for all players in database (incremental with checkpoint).
+
+    Uses game_logs to find players needing updates. If interrupted, run again
+    to resume - already updated players are automatically skipped.
+
+    Requires: Run 'player game-logs' first to sync game log data.
+    """
     from src.stats_collector import NBAStatsCollector
 
     collector = NBAStatsCollector(db_path=ctx.obj['db'])
@@ -54,7 +60,7 @@ def update_all(ctx, include_new, add_new_only):
     rostered_only = ctx.obj['rostered_only']
 
     click.echo("=" * 60)
-    click.echo("Updating player stats")
+    click.echo("Updating player stats (checkpoint enabled)")
     click.echo("=" * 60)
     click.echo(f"Delay: {delay}s | Rostered only: {rostered_only}")
 
@@ -74,13 +80,11 @@ def update_all(ctx, include_new, add_new_only):
             rostered_only=rostered_only
         )
     else:
-        click.echo("Mode: Update existing players only")
+        click.echo("Mode: Update existing players only (using game_logs)")
         collector.update_all_players(
             delay=delay,
             only_existing=True
         )
-
-    click.echo(click.style("Update complete!", fg='green'))
 
 
 @player.command('game-logs')
@@ -117,29 +121,13 @@ def game_logs(ctx, historical):
         click.echo(f"Inserted: {result.get('inserted', 0)}, Skipped: {result.get('skipped', 0)}")
 
 
-@player.command()
-@click.pass_context
-def positions(ctx):
-    """Collect player positions from team rosters (30 API calls)."""
-    from src.stats_collector import NBAStatsCollector
-
-    collector = NBAStatsCollector(db_path=ctx.obj['db'])
-    delay = ctx.obj['delay']
-
-    click.echo("=" * 60)
-    click.echo("Collecting player positions from team rosters")
-    click.echo("=" * 60)
-    click.echo(f"Delay: {delay}s")
-
-    collector.collect_all_player_positions(delay=delay)
-    click.echo(click.style("Position collection complete!", fg='green'))
-
-
 @player.command('play-types')
-@click.option('--force', is_flag=True, help='Force collection even if no new games')
 @click.pass_context
-def play_types(ctx, force):
-    """Collect Synergy play type stats for all players."""
+def play_types(ctx):
+    """Collect Synergy play type stats for all players (incremental).
+
+    Updates play types when player has played new games since last collection.
+    """
     from src.stats_collector import NBAStatsCollector
 
     collector = NBAStatsCollector(db_path=ctx.obj['db'])
@@ -148,93 +136,20 @@ def play_types(ctx, force):
     click.echo("=" * 60)
     click.echo("Play Types Collection")
     click.echo("=" * 60)
-    click.echo(f"Delay: {delay}s | Force: {force}")
-
-    conn = sqlite3.connect(collector.db_path)
-    cursor = conn.cursor()
-
-    if force:
-        cursor.execute("""
-            SELECT ps.player_name, ps.games_played
-            FROM player_stats ps
-            WHERE ps.season = ?
-            ORDER BY ps.player_name
-        """, (collector.SEASON,))
-        players = cursor.fetchall()
-    else:
-        cursor.execute("""
-            SELECT ps.player_name, ps.games_played,
-                   COALESCE(MAX(ppt.games_played), 0) as pt_games_played
-            FROM player_stats ps
-            LEFT JOIN player_play_types ppt ON ps.player_id = ppt.player_id AND ppt.season = ?
-            WHERE ps.season = ?
-            GROUP BY ps.player_id, ps.player_name, ps.games_played
-            HAVING pt_games_played < ps.games_played OR pt_games_played = 0
-            ORDER BY ps.player_name
-        """, (collector.SEASON, collector.SEASON))
-        players = cursor.fetchall()
-
-    conn.close()
-
-    total = len(players)
-    if total == 0:
-        click.echo("All players already have up-to-date play type data!")
-        return
-
-    click.echo(f"Processing {total} players...")
-
-    collected = 0
-    errors = 0
-
-    for i, row in enumerate(players, 1):
-        player_name = row[0]
-        games_played = row[1]
-
-        click.echo(f"[{i}/{total}] {player_name} (GP: {games_played})...", nl=False)
-
-        try:
-            result = collector.collect_player_play_types(player_name, delay=delay, force=force)
-            if result:
-                collected += 1
-                click.echo(click.style(" Done", fg='green'))
-            else:
-                errors += 1
-                click.echo(click.style(" Skipped", fg='yellow'))
-        except Exception as e:
-            errors += 1
-            click.echo(click.style(f" Error: {e}", fg='red'))
-
-        if i < total:
-            time.sleep(delay)
-
-    click.echo(f"\nCollected: {collected}, Errors: {errors}")
-
-
-@player.command('assist-zones')
-@click.pass_context
-def assist_zones(ctx):
-    """Collect assist zones for all players (incremental)."""
-    from src.stats_collector import NBAStatsCollector
-
-    collector = NBAStatsCollector(db_path=ctx.obj['db'])
-    delay = ctx.obj['delay']
-
-    click.echo("=" * 60)
-    click.echo("Assist Zones Collection")
-    click.echo("=" * 60)
     click.echo(f"Delay: {delay}s")
 
     conn = sqlite3.connect(collector.db_path)
     cursor = conn.cursor()
 
+    # Compare stats update time vs play types update time
     cursor.execute("""
-        SELECT ps.player_id, ps.player_name, ps.games_played,
-               COALESCE(MAX(paz.games_analyzed), 0) as games_analyzed
+        SELECT ps.player_id, ps.player_name, ps.last_updated as stats_updated,
+               MAX(ppt.last_updated) as pt_updated
         FROM player_stats ps
-        LEFT JOIN player_assist_zones paz
-            ON ps.player_id = paz.player_id AND paz.season = ?
+        LEFT JOIN player_play_types ppt
+            ON ps.player_id = ppt.player_id AND ppt.season = ?
         WHERE ps.season = ?
-        GROUP BY ps.player_id, ps.player_name, ps.games_played
+        GROUP BY ps.player_id, ps.player_name, ps.last_updated
     """, (collector.SEASON, collector.SEASON))
     players = cursor.fetchall()
     conn.close()
@@ -244,20 +159,180 @@ def assist_zones(ctx):
     skipped = 0
     errors = 0
 
-    for i, (_, player_name, games_played, games_analyzed) in enumerate(players, 1):
+    for i, (player_id, player_name, stats_updated, pt_updated) in enumerate(players, 1):
         click.echo(f"[{i}/{total}] {player_name}...", nl=False)
 
-        if games_analyzed and games_analyzed >= games_played:
+        # Skip if play types are up to date
+        if pt_updated and stats_updated and pt_updated >= stats_updated:
             skipped += 1
-            click.echo(click.style(f" Skipped (all {games_played} games analyzed)", fg='yellow'))
+            click.echo(click.style(" Skipped (play types up to date)", fg='yellow'))
             continue
+
+        try:
+            result = collector.collect_player_play_types(player_name, delay=delay)
+            if result:
+                success += 1
+                click.echo(click.style(" OK", fg='green'))
+            else:
+                skipped += 1
+                click.echo(click.style(" Skipped", fg='yellow'))
+        except Exception as e:
+            errors += 1
+            click.echo(click.style(f" Error: {e}", fg='red'))
+
+        if i < total:
+            time.sleep(delay)
+
+    click.echo(f"\nSuccess: {success}, Skipped: {skipped}, Errors: {errors}")
+
+
+@player.command('assist-zones')
+@click.option('--force', is_flag=True, help='Force re-collection even if zones are up to date')
+@click.pass_context
+def assist_zones(ctx, force):
+    """Collect assist zones for all players (incremental).
+
+    Updates zones when player has played new games since last zone collection.
+    Use --force to re-collect all players regardless of freshness.
+    """
+    from src.stats_collector import NBAStatsCollector
+
+    collector = NBAStatsCollector(db_path=ctx.obj['db'])
+    delay = ctx.obj['delay']
+
+    click.echo("=" * 60)
+    click.echo("Assist Zones Collection")
+    click.echo("=" * 60)
+    click.echo(f"Delay: {delay}s")
+    if force:
+        click.echo(click.style("Force mode enabled - re-collecting all players", fg='cyan'))
+
+    conn = sqlite3.connect(collector.db_path)
+    cursor = conn.cursor()
+
+    # If force mode, clear checkpoints and zone data to force full re-collection
+    if force:
+        cursor.execute("DELETE FROM assist_zones_checkpoint WHERE season = ?", (collector.SEASON,))
+        cursor.execute("DELETE FROM player_assist_zones WHERE season = ?", (collector.SEASON,))
+        conn.commit()
+        click.echo(click.style("Cleared existing zone data and checkpoints", fg='cyan'))
+
+    # Get players with their stats update time, zones update time, and game counts
+    # We check both timestamp AND whether all games are in checkpoint
+    cursor.execute("""
+        SELECT ps.player_id, ps.player_name, ps.last_updated as stats_updated,
+               MAX(paz.last_updated) as zones_updated,
+               (SELECT COUNT(*) FROM player_game_logs gl
+                WHERE gl.player_id = ps.player_id AND gl.season = ?) as total_games,
+               (SELECT COUNT(*) FROM assist_zones_checkpoint azc
+                WHERE azc.player_id = ps.player_id AND azc.season = ?) as completed_games
+        FROM player_stats ps
+        LEFT JOIN player_assist_zones paz
+            ON ps.player_id = paz.player_id AND paz.season = ?
+        WHERE ps.season = ?
+        GROUP BY ps.player_id, ps.player_name, ps.last_updated
+    """, (collector.SEASON, collector.SEASON, collector.SEASON, collector.SEASON))
+    players = cursor.fetchall()
+    conn.close()
+
+    total = len(players)
+    success = 0
+    skipped = 0
+    errors = 0
+
+    for i, (player_id, player_name, stats_updated, zones_updated, total_games, completed_games) in enumerate(players, 1):
+        click.echo(f"[{i}/{total}] {player_name}...", nl=False)
+
+        # Skip if zones are up to date: timestamp check AND all games processed
+        all_games_processed = total_games == completed_games
+        timestamp_fresh = zones_updated and stats_updated and zones_updated >= stats_updated
+
+        if not force and timestamp_fresh and all_games_processed:
+            skipped += 1
+            click.echo(click.style(" Skipped (zones up to date)", fg='yellow'))
+            continue
+
+        # Show reason if we're processing despite having zones
+        if not force and zones_updated and not all_games_processed:
+            click.echo(click.style(f" ({completed_games}/{total_games} games)...", fg='cyan'), nl=False)
 
         try:
             result = collector.collect_player_assist_zones(player_name, delay=delay)
             if result:
                 success += 1
+                click.echo(click.style(" OK", fg='green'))
             else:
                 skipped += 1
+                click.echo(click.style(" Skipped", fg='yellow'))
+        except Exception as e:
+            errors += 1
+            click.echo(click.style(f" Error: {e}", fg='red'))
+
+        if i < total:
+            time.sleep(delay)
+
+    click.echo(f"\nSuccess: {success}, Skipped: {skipped}, Errors: {errors}")
+
+
+@player.command('shooting-zones')
+@click.option('--force', is_flag=True, help='Force re-collection even if zones are up to date')
+@click.pass_context
+def shooting_zones(ctx, force):
+    """Collect shooting zones for all players (incremental).
+
+    Updates zones when player has played new games since last zone collection.
+    Use --force to re-collect all players regardless of freshness.
+    """
+    from src.stats_collector import NBAStatsCollector
+
+    collector = NBAStatsCollector(db_path=ctx.obj['db'])
+    delay = ctx.obj['delay']
+
+    click.echo("=" * 60)
+    click.echo("Shooting Zones Collection")
+    click.echo("=" * 60)
+    click.echo(f"Delay: {delay}s")
+    if force:
+        click.echo(click.style("Force mode enabled - re-collecting all players", fg='cyan'))
+
+    conn = sqlite3.connect(collector.db_path)
+    cursor = conn.cursor()
+
+    # Get players and compare stats update time vs zones update time
+    cursor.execute("""
+        SELECT ps.player_id, ps.player_name, ps.last_updated as stats_updated,
+               MAX(psz.last_updated) as zones_updated
+        FROM player_stats ps
+        LEFT JOIN player_shooting_zones psz
+            ON ps.player_id = psz.player_id AND psz.season = ?
+        WHERE ps.season = ?
+        GROUP BY ps.player_id, ps.player_name, ps.last_updated
+    """, (collector.SEASON, collector.SEASON))
+    players = cursor.fetchall()
+    conn.close()
+
+    total = len(players)
+    success = 0
+    skipped = 0
+    errors = 0
+
+    for i, (player_id, player_name, stats_updated, zones_updated) in enumerate(players, 1):
+        click.echo(f"[{i}/{total}] {player_name}...", nl=False)
+
+        # Skip if zones are up to date (zones updated after stats), unless forced
+        if not force and zones_updated and stats_updated and zones_updated >= stats_updated:
+            skipped += 1
+            click.echo(click.style(" Skipped (zones up to date)", fg='yellow'))
+            continue
+
+        try:
+            result = collector.shooting_zone_collector.collect(player_id)
+            if result.is_success:
+                success += 1
+                click.echo(click.style(f" OK ({len(result.data)} zones)", fg='green'))
+            else:
+                skipped += 1
+                click.echo(click.style(f" Skipped ({result.message})", fg='yellow'))
         except Exception as e:
             errors += 1
             click.echo(click.style(f" Error: {e}", fg='red'))
@@ -272,7 +347,7 @@ def assist_zones(ctx):
 @click.pass_context
 def rolling_stats(ctx):
     """Compute rolling statistics (L5, L10, L20 averages)."""
-    from src.rolling_stats import compute_rolling_stats, get_rolling_stats_summary
+    from src.ml_pipeline.rolling_stats import compute_rolling_stats, get_rolling_stats_summary
 
     db_path = ctx.obj['db']
 

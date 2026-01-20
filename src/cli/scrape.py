@@ -154,7 +154,7 @@ def _scrape_with_retry(scrape_func, name, no_retry=False):
 @with_timeout(SCRAPER_TIMEOUT)
 def _scrape_underdog():
     """Scrape from Underdog Fantasy."""
-    from src.underdog.underdog_scraper import UnderdogScraper
+    from src.scrapers import UnderdogScraper
 
     email = os.environ.get("UNDERDOG_EMAIL")
     password = os.environ.get("UNDERDOG_PASSWORD")
@@ -173,7 +173,7 @@ def _scrape_underdog():
 @with_timeout(SCRAPER_TIMEOUT)
 def _scrape_prizepicks():
     """Scrape from PrizePicks."""
-    from src.prizepicks.prizepicks_scraper import PrizePicksScraper
+    from src.scrapers import PrizePicksScraper
 
     scraper = PrizePicksScraper()
     props = scraper.scrape()
@@ -182,9 +182,9 @@ def _scrape_prizepicks():
 
 def _scrape_odds_api():
     """Scrape from Odds API."""
-    from src.odds import PropsScraper
+    from src.scrapers import PropsScraper
 
-    scraper = PropsScraper(db_path='data/nba_stats.db')
+    scraper = PropsScraper()
     events, props = scraper.scrape_all_props()
     return {
         'events': events,
@@ -212,3 +212,8 @@ def _print_summary(results):
                 elif 'props' in result:
                     status += f" ({result['props']} props)"
         click.echo(f"  {source}: {status}")
+
+    # Show Odds API credits remaining
+    odds_result = results.get('odds_api')
+    if isinstance(odds_result, dict) and odds_result.get('quota_remaining') is not None:
+        click.echo(f"\n  Odds API credits remaining: {odds_result['quota_remaining']}")

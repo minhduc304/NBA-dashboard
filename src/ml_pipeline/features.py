@@ -470,34 +470,115 @@ class FeatureEngineer:
         opp_defense: Optional[pd.DataFrame] = None
     ) -> pd.DataFrame:
         """
-        Add opponent defensive strength features.
+        Add opponent defensive strength and adjusted projection features.
 
         Features added:
         - opp_stat_allowed: Average stat allowed by opponent
         - opp_stat_diff: Diff between opp avg allowed and league avg
+        - opp_def_rank: Opponent's defensive rank for this stat (1=best, 30=worst)
+        - opp_def_factor: Multiplier based on opponent defense strength
+        - pace_factor: Multiplier based on expected game pace
+        - opp_adjusted_proj: Player projection adjusted for opponent defense
+        - pace_adjusted_proj: Player projection adjusted for pace
+        - full_adjusted_proj: Combined opponent + pace adjusted projection
+        - line_vs_adjusted: Line compared to full adjusted projection
+        - adjusted_edge: Our projected edge vs the line
         """
+        # Default league average pace (NBA average ~100)
+        LEAGUE_AVG_PACE = 100.0
+
         if opp_defense is None or opp_defense.empty:
             df['opp_stat_allowed'] = 0
             df['opp_stat_diff'] = 0
+            df['opp_def_rank'] = 15  # Middle rank
+            df['opp_def_factor'] = 1.0
+            df['pace_factor'] = 1.0
+            df['opp_adjusted_proj'] = df.get('l10_stat', 0)
+            df['pace_adjusted_proj'] = df.get('l10_stat', 0)
+            df['full_adjusted_proj'] = df.get('l10_stat', 0)
+            df['line_vs_adjusted'] = 0
+            df['adjusted_edge'] = 0
             return df
 
         if 'opponent_abbr' not in df.columns:
             df['opp_stat_allowed'] = 0
             df['opp_stat_diff'] = 0
+            df['opp_def_rank'] = 15
+            df['opp_def_factor'] = 1.0
+            df['pace_factor'] = 1.0
+            df['opp_adjusted_proj'] = df.get('l10_stat', 0)
+            df['pace_adjusted_proj'] = df.get('l10_stat', 0)
+            df['full_adjusted_proj'] = df.get('l10_stat', 0)
+            df['line_vs_adjusted'] = 0
+            df['adjusted_edge'] = 0
             return df
 
-        # Calculate league average
-        league_avg = opp_defense['opp_avg_stat_allowed'].mean()
+        # Calculate league average for this stat
+        league_avg_allowed = opp_defense['opp_avg_stat_allowed'].mean()
+
+        # Calculate defensive rank (1 = allows fewest = best defense)
+        opp_defense = opp_defense.copy()
+        opp_defense['opp_def_rank'] = opp_defense['opp_avg_stat_allowed'].rank(ascending=True)
 
         # Merge opponent defense stats
         df = df.merge(
-            opp_defense[['opponent_abbr', 'opp_avg_stat_allowed']],
+            opp_defense[['opponent_abbr', 'opp_avg_stat_allowed', 'opp_def_rank']],
             on='opponent_abbr',
             how='left'
         )
 
-        df['opp_stat_allowed'] = df['opp_avg_stat_allowed'].fillna(league_avg)
-        df['opp_stat_diff'] = df['opp_stat_allowed'] - league_avg
+        # Fill missing with league average
+        df['opp_stat_allowed'] = df['opp_avg_stat_allowed'].fillna(league_avg_allowed)
+        df['opp_def_rank'] = df['opp_def_rank'].fillna(15)  # Middle rank
+
+        # Opponent defense differential from league average
+        df['opp_stat_diff'] = df['opp_stat_allowed'] - league_avg_allowed
+
+        # === OPPONENT DEFENSE FACTOR ===
+        # If opponent allows MORE than average, factor > 1 (boost projection)
+        # If opponent allows LESS than average, factor < 1 (reduce projection)
+        df['opp_def_factor'] = np.where(
+            league_avg_allowed > 0,
+            df['opp_stat_allowed'] / league_avg_allowed,
+            1.0
+        )
+        # Clip to reasonable range (0.8 to 1.2 = ±20% adjustment)
+        df['opp_def_factor'] = df['opp_def_factor'].clip(0.8, 1.2)
+
+        # === PACE FACTOR ===
+        # Calculate expected game pace and adjustment factor
+        if 'player_team_pace' in df.columns and 'opp_pace' in df.columns:
+            df['expected_pace'] = (df['player_team_pace'].fillna(LEAGUE_AVG_PACE) +
+                                   df['opp_pace'].fillna(LEAGUE_AVG_PACE)) / 2
+            df['pace_factor'] = df['expected_pace'] / LEAGUE_AVG_PACE
+            # Clip to reasonable range
+            df['pace_factor'] = df['pace_factor'].clip(0.9, 1.1)
+            df = df.drop(columns=['expected_pace'], errors='ignore')
+        else:
+            df['pace_factor'] = 1.0
+
+        # === ADJUSTED PROJECTIONS ===
+        l10_stat = df['l10_stat'].fillna(0)
+
+        # Opponent-adjusted projection
+        df['opp_adjusted_proj'] = l10_stat * df['opp_def_factor']
+
+        # Pace-adjusted projection
+        df['pace_adjusted_proj'] = l10_stat * df['pace_factor']
+
+        # Full adjusted projection (combine both factors)
+        df['full_adjusted_proj'] = l10_stat * df['opp_def_factor'] * df['pace_factor']
+
+        # === LINE VS ADJUSTED FEATURES ===
+        if 'line' in df.columns:
+            # How does the line compare to our adjusted projection?
+            df['line_vs_adjusted'] = df['line'] - df['full_adjusted_proj']
+
+            # Our edge: positive = value on over, negative = value on under
+            df['adjusted_edge'] = df['full_adjusted_proj'] - df['line']
+        else:
+            df['line_vs_adjusted'] = 0
+            df['adjusted_edge'] = 0
 
         # Drop intermediate column
         df = df.drop(columns=['opp_avg_stat_allowed'], errors='ignore')
@@ -623,14 +704,22 @@ class FeatureEngineer:
 
     def get_opponent_defense_features(self) -> List[str]:
         """
-        Return opponent defensive strength features.
+        Return opponent-adjusted features for the classifier.
+
+        Only includes the 2 key features that showed improvement in CV testing:
+        - adjusted_edge: Our projected edge vs the line (positive = value on over)
+        - line_vs_adjusted: Line minus adjusted projection
+
+        The intermediate features (opp_def_factor, pace_factor, individual projections)
+        are still computed internally but excluded from the model to prevent overfitting
+        with limited training data.
 
         Returns:
-            List of opponent defense column names
+            List of opponent-adjusted feature column names
         """
         return [
-            'opp_stat_allowed',     # Avg stat allowed by opponent
-            'opp_stat_diff',        # Diff from league average
+            'adjusted_edge',        # Adjusted projection minus line (key signal)
+            'line_vs_adjusted',     # Line minus adjusted projection
         ]
 
     def get_classifier_features(self) -> List[str]:

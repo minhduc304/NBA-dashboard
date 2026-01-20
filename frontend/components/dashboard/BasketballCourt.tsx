@@ -53,41 +53,47 @@ export function BasketballCourt({ zoneData, className = '' }: BasketballCourtPro
   };
 
   // Render a zone tooltip
-  const ZoneTooltipContent = ({ zone }: { zone: ShootingZoneMatchup }) => (
-    <div className="p-2 space-y-2 min-w-[200px]">
-      <div className="border-b border-border pb-2">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Zone</div>
-        <div className="font-semibold text-sm">
-          {ZONE_DISPLAY_NAMES[zone.zoneName]}
+  const ZoneTooltipContent = ({ zone }: { zone: ShootingZoneMatchup }) => {
+    return (
+      <div className="p-3 space-y-2 min-w-[220px]">
+        <div className="border-b pb-2 mb-2" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+          <div className="text-[10px] uppercase tracking-wider opacity-60" style={{ color: '#888' }}>
+            Zone
+          </div>
+          <div className="font-semibold text-sm mt-1" style={{ color: '#fff' }}>
+            {ZONE_DISPLAY_NAMES[zone.zoneName] || zone.zoneName}
+          </div>
         </div>
-      </div>
-      {zone.hasData ? (
-        <>
-          <div className="flex justify-between text-xs">
-            <span className="text-muted-foreground">Player FG%</span>
-            <span className="font-mono">
-              {zone.playerFgPct.toFixed(1)}%
-              <span className="text-muted-foreground ml-1">
-                ({zone.playerFgm.toFixed(1)}/{zone.playerFga.toFixed(1)})
+        {zone.hasData ? (
+          <div className="space-y-2">
+            <div className="flex justify-between items-center text-xs">
+              <span style={{ color: '#888' }}>Player FG%:</span>
+              <span className="font-mono font-semibold" style={{ color: '#fff' }}>
+                {zone.playerFgPct.toFixed(1)}% ({zone.playerFgm.toFixed(1)}/{zone.playerFga.toFixed(1)})
               </span>
-            </span>
+            </div>
+            <div className="flex justify-between items-center text-xs">
+              <span style={{ color: '#888' }}>Opp DEF FG%:</span>
+              <span className="font-mono" style={{ color: '#fff' }}>
+                {zone.oppDefFgPct.toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between items-center text-xs">
+              <span style={{ color: '#888' }}>Advantage:</span>
+              <span
+                className="font-mono font-semibold"
+                style={{ color: zone.advantage > 3 ? '#4ade80' : zone.advantage > -3 ? '#facc15' : '#f87171' }}
+              >
+                {formatAdvantage(zone.advantage)}
+              </span>
+            </div>
           </div>
-          <div className="flex justify-between text-xs">
-            <span className="text-muted-foreground">Opp DEF FG%</span>
-            <span className="font-mono">{zone.oppDefFgPct.toFixed(1)}%</span>
-          </div>
-          <div className="flex justify-between text-xs pt-1 border-t border-border">
-            <span className="text-muted-foreground">Advantage</span>
-            <span className={`font-mono font-semibold ${getAdvantageTextColor(zone.advantage)}`}>
-              {formatAdvantage(zone.advantage)}
-            </span>
-          </div>
-        </>
-      ) : (
-        <div className="text-xs text-muted-foreground italic">No data available</div>
-      )}
-    </div>
-  );
+        ) : (
+          <div className="text-xs italic" style={{ color: '#888' }}>No data available</div>
+        )}
+      </div>
+    );
+  };
 
   // Interactive zone wrapper
   const InteractiveZone = ({
@@ -172,55 +178,43 @@ export function BasketballCourt({ zoneData, className = '' }: BasketballCourtPro
           />
         </InteractiveZone>
 
-        {/* Mid-Range - area inside 3pt arc but outside paint */}
+        {/* Mid-Range - area between paint and 3pt line */}
+        {/* This fills the entire area inside the 3pt arc; Paint zone drawn later will cover the center */}
         <InteractiveZone zone={getZone('Mid-Range')}>
           <path
             d={`M ${CORNER_3_WIDTH} 0
                 L ${CORNER_3_WIDTH} ${CORNER_3_HEIGHT}
-                A ${THREE_PT_RADIUS} ${THREE_PT_RADIUS} 0 0 1 ${COURT_WIDTH - CORNER_3_WIDTH} ${CORNER_3_HEIGHT}
+                A ${THREE_PT_RADIUS} ${THREE_PT_RADIUS} 0 0 0 ${COURT_WIDTH - CORNER_3_WIDTH} ${CORNER_3_HEIGHT}
                 L ${COURT_WIDTH - CORNER_3_WIDTH} 0
-                L ${KEY_RIGHT} 0
-                L ${KEY_RIGHT} ${KEY_HEIGHT}
-                L ${KEY_LEFT} ${KEY_HEIGHT}
-                L ${KEY_LEFT} 0
                 Z`}
             fill={getZoneColor(
               getZone('Mid-Range')?.advantage ?? 0,
               getZone('Mid-Range')?.hasData ?? false
             )}
-            fillRule="evenodd"
           />
         </InteractiveZone>
 
-        {/* Paint (Non-RA) - rectangle from baseline, excluding restricted area */}
+        {/* Paint (Non-RA) - key/paint area minus restricted area */}
         <InteractiveZone zone={getZone('In The Paint (Non-RA)')}>
           <path
             d={`M ${KEY_LEFT} 0
                 L ${KEY_LEFT} ${KEY_HEIGHT}
                 L ${KEY_RIGHT} ${KEY_HEIGHT}
                 L ${KEY_RIGHT} 0
-                Z
-                M ${BASKET_X - RESTRICTED_RADIUS} ${BASKET_Y}
-                A ${RESTRICTED_RADIUS} ${RESTRICTED_RADIUS} 0 0 1 ${BASKET_X + RESTRICTED_RADIUS} ${BASKET_Y}
-                L ${BASKET_X + RESTRICTED_RADIUS} 0
-                L ${BASKET_X - RESTRICTED_RADIUS} 0
                 Z`}
             fill={getZoneColor(
               getZone('In The Paint (Non-RA)')?.advantage ?? 0,
               getZone('In The Paint (Non-RA)')?.hasData ?? false
             )}
-            fillRule="evenodd"
           />
         </InteractiveZone>
 
-        {/* Restricted Area - semi-circle under basket */}
+        {/* Restricted Area - circle around basket */}
         <InteractiveZone zone={getZone('Restricted Area')}>
-          <path
-            d={`M ${BASKET_X - RESTRICTED_RADIUS} 0
-                L ${BASKET_X - RESTRICTED_RADIUS} ${BASKET_Y}
-                A ${RESTRICTED_RADIUS} ${RESTRICTED_RADIUS} 0 0 0 ${BASKET_X + RESTRICTED_RADIUS} ${BASKET_Y}
-                L ${BASKET_X + RESTRICTED_RADIUS} 0
-                Z`}
+          <circle
+            cx={BASKET_X}
+            cy={BASKET_Y}
+            r={RESTRICTED_RADIUS}
             fill={getZoneColor(
               getZone('Restricted Area')?.advantage ?? 0,
               getZone('Restricted Area')?.hasData ?? false

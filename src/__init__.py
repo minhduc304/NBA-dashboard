@@ -13,7 +13,10 @@ Modules:
 """
 
 from .config import Config, APIConfig
-from .stats_collector import NBAStatsCollector, StatsCollector
+from .stats_collector import NBAStatsCollector
+
+# Backward compatibility alias
+StatsCollector = NBAStatsCollector
 
 __all__ = [
     'Config',

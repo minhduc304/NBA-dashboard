@@ -22,10 +22,11 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
+from src.config import APIConfig
 
 @click.group()
 @click.option('--db', default='data/nba_stats.db', help='Database path')
-@click.option('--delay', default=1.0, type=float, help='API delay in seconds')
+@click.option('--delay', default=APIConfig().delay, type=float, help='API delay in seconds')
 @click.option('--rostered-only', is_flag=True, help='Only process rostered players')
 @click.option('-v', '--verbose', is_flag=True, help='Verbose output')
 @click.pass_context

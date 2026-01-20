@@ -2,44 +2,20 @@
 
 import { useMemo, useState, useCallback, useEffect } from 'react';
 import { cn } from '@/lib/utils';
-import { Minus, Plus } from 'lucide-react';
+import { Minus, Plus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
-import { STAT_CATEGORIES, STAT_TO_API_FIELD, getPlayerStats, transformGameLogsToChartData, NBA_TEAMS, type Player, type StatCategory, type ChartDataPoint } from '@/lib/data';
+import { STAT_CATEGORIES, STAT_TO_API_FIELD, getPlayerStats, transformGameLogsToChartData, type Player, type StatCategory, type ChartDataPoint } from '@/lib/data';
 import { fetchPlayerGameLogs, fetchPlayerById, fetchPlayerProps, fetchPlayTypeMatchup, type ApiGameLog, type ApiPlayer, type ApiPropLine, type ApiPlayTypeMatchup } from '@/lib/api';
+import { STAT_CATEGORY_TO_PROP } from '@/lib/constants';
 import { StatsChart, type HitRateInfo } from './StatsChart';
 import { ShootingZonesCard } from './ShootingZonesCard';
 import { AssistZonesCard } from './AssistZonesCard';
-
-const seasons = ['24/25', '25/26', 'All'];
-const splits = ['H2H', 'Home', 'Away', 'More'];
-
-// Format American odds for display
-const formatOdds = (odds: number | null): string => {
-  if (odds === null) return '—';
-  return odds >= 0 ? `+${odds}` : `${odds}`;
-};
-
-// Map StatCategory to underdog prop stat names
-const STAT_CATEGORY_TO_PROP: Record<string, string> = {
-  'Points': 'points',
-  'Assists': 'assists',
-  'Rebounds': 'rebounds',
-  '3PM': 'three_points_made',
-  '3PA': 'three_points_att',
-  'FGA': 'field_goals_att',
-  'Pts+Ast': 'pts_asts',
-  'Pts+Reb': 'pts_rebs',
-  'Ast+Reb': 'rebs_asts',
-  'PRA': 'pts_rebs_asts',
-  'Steals': 'steals',
-  'Blocks': 'blocks',
-  'Stl+Blk': 'blks_stls',
-  'Turnovers': 'turnovers',
-  'Fantasy': 'fantasy_points',
-  'Double': 'double_doubles',
-};
+import { PlayerHeader } from './PlayerHeader';
+import { PlayTypeAnalysis } from './PlayTypeAnalysis';
+import { FilterPanel, DEFAULT_FILTERS, type GameLogFilters } from './FilterPanel';
+import { ErrorState } from '@/components/ui/error-state';
 
 interface MainContentProps {
   player: Player | null;
@@ -47,9 +23,11 @@ interface MainContentProps {
 
 export function MainContent({ player }: MainContentProps) {
   const [activeStat, setActiveStat] = useState<StatCategory>('Points');
-  const [activeSeason, setActiveSeason] = useState('25/26');
   const [gamesCount, setGamesCount] = useState(20);
-  const [rankingsView, setRankingsView] = useState<'All' | 'L15'>('All');
+
+  // Filter panel state
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
+  const [filters, setFilters] = useState<GameLogFilters>(DEFAULT_FILTERS);
 
   // Dynamic line value and hit rate from chart interaction
   const [currentLineValue, setCurrentLineValue] = useState<number | null>(null);
@@ -59,6 +37,12 @@ export function MainContent({ player }: MainContentProps) {
   const [gameLogs, setGameLogs] = useState<ApiGameLog[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [logsRetryCount, setLogsRetryCount] = useState(0);
+
+  // Retry handler for game logs
+  const handleRetryLogs = useCallback(() => {
+    setLogsRetryCount(prev => prev + 1);
+  }, []);
 
   // Player stats state (for season averages)
   const [playerStats, setPlayerStats] = useState<ApiPlayer | null>(null);
@@ -73,6 +57,13 @@ export function MainContent({ player }: MainContentProps) {
   // Play type matchup state
   const [playTypeMatchups, setPlayTypeMatchups] = useState<ApiPlayTypeMatchup[]>([]);
   const [isLoadingMatchups, setIsLoadingMatchups] = useState(false);
+  const [matchupsError, setMatchupsError] = useState<string | null>(null);
+  const [matchupsRetryCount, setMatchupsRetryCount] = useState(0);
+
+  // Retry handler for play type matchups
+  const handleRetryMatchups = useCallback(() => {
+    setMatchupsRetryCount(prev => prev + 1);
+  }, []);
 
   // Generate stats based on player - memoized to avoid recalculating on every render
   const stats = useMemo(() => {
@@ -135,7 +126,6 @@ export function MainContent({ player }: MainContentProps) {
       try {
         const response = await fetchPlayerProps(playerId);
         setPlayerProps(response.props);
-        // Don't override opponent from props - use schedule data instead
       } catch (err) {
         console.error('Failed to fetch player props:', err);
         setPlayerProps([]);
@@ -151,22 +141,26 @@ export function MainContent({ player }: MainContentProps) {
   useEffect(() => {
     if (!player || !opponentId) {
       setPlayTypeMatchups([]);
+      setMatchupsError(null);
       return;
     }
 
     const playerId = parseInt(player.id, 10);
     if (isNaN(playerId)) {
       setPlayTypeMatchups([]);
+      setMatchupsError(null);
       return;
     }
 
     const loadMatchups = async () => {
       setIsLoadingMatchups(true);
+      setMatchupsError(null);
       try {
         const response = await fetchPlayTypeMatchup(playerId, opponentId);
         setPlayTypeMatchups(response.matchups);
       } catch (err) {
         console.error('Failed to fetch play type matchup:', err);
+        setMatchupsError('Unable to load play type data');
         setPlayTypeMatchups([]);
       } finally {
         setIsLoadingMatchups(false);
@@ -174,7 +168,7 @@ export function MainContent({ player }: MainContentProps) {
     };
 
     loadMatchups();
-  }, [player?.id, opponentId]);
+  }, [player?.id, opponentId, matchupsRetryCount]);
 
   // Fetch game logs when player or gamesCount changes
   useEffect(() => {
@@ -212,13 +206,96 @@ export function MainContent({ player }: MainContentProps) {
     };
 
     loadGameLogs();
-  }, [player?.id, gamesCount, activeStat]); // Re-fetch when stat category changes to get relevant DNP data
+  }, [player?.id, gamesCount, activeStat, logsRetryCount]);
 
   // Transform game logs to chart data based on selected stat
   const chartData: ChartDataPoint[] = useMemo(() => {
     if (gameLogs.length === 0) return [];
     return transformGameLogsToChartData(gameLogs, activeStat);
   }, [gameLogs, activeStat]);
+
+  // Extract available seasons from game logs
+  const availableSeasons = useMemo(() => {
+    const seasons = new Set<string>();
+    gameLogs.forEach((log) => {
+      if (log.season) seasons.add(log.season);
+    });
+    return Array.from(seasons).sort();
+  }, [gameLogs]);
+
+  // Extract available opponents from game logs
+  const availableOpponents = useMemo(() => {
+    const opponents = new Set<string>();
+    gameLogs.forEach((log) => {
+      if (log.matchup) {
+        // Matchup format: "LAL vs. GSW" or "LAL @ GSW"
+        const parts = log.matchup.split(/\s+(?:vs\.|@)\s+/);
+        if (parts.length === 2) {
+          opponents.add(parts[1]);
+        }
+      }
+    });
+    return Array.from(opponents).sort();
+  }, [gameLogs]);
+
+  // Filter game logs based on active filters
+  const filteredGameLogs = useMemo(() => {
+    return gameLogs.filter((log) => {
+      // Season filter
+      if (filters.season !== 'all' && log.season !== filters.season) {
+        return false;
+      }
+
+      // Location filter (home vs away)
+      if (filters.location === 'home' && !log.matchup?.includes('vs.')) {
+        return false;
+      }
+      if (filters.location === 'away' && !log.matchup?.includes('@')) {
+        return false;
+      }
+
+      // Result filter (win vs loss)
+      if (filters.result === 'win' && log.wl !== 'W') {
+        return false;
+      }
+      if (filters.result === 'loss' && log.wl !== 'L') {
+        return false;
+      }
+
+      // Opponent filter
+      if (filters.opponentAbbr) {
+        const parts = log.matchup?.split(/\s+(?:vs\.|@)\s+/) || [];
+        const opponent = parts[1];
+        if (opponent !== filters.opponentAbbr) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [gameLogs, filters]);
+
+  // Transform filtered game logs to chart data
+  const filteredChartData: ChartDataPoint[] = useMemo(() => {
+    if (filteredGameLogs.length === 0) return [];
+    return transformGameLogsToChartData(filteredGameLogs, activeStat);
+  }, [filteredGameLogs, activeStat]);
+
+  // Reset filters when player changes
+  useEffect(() => {
+    setFilters(DEFAULT_FILTERS);
+    setIsFilterPanelOpen(false);
+  }, [player?.id]);
+
+  // Count active filters for badge
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filters.season !== 'all') count++;
+    if (filters.location !== 'all') count++;
+    if (filters.result !== 'all') count++;
+    if (filters.opponentAbbr) count++;
+    return count;
+  }, [filters]);
 
   // Handle line changes from the chart
   const handleLineChange = useCallback((value: number, hitRateInfo: HitRateInfo) => {
@@ -242,8 +319,25 @@ export function MainContent({ player }: MainContentProps) {
     return playerProps.find(p => p.statName === propStatName) || null;
   }, [playerProps, activeStat]);
 
+  // Filter stat categories to only show those with available props
+  const availableStatCategories = useMemo(() => {
+    if (playerProps.length === 0) return STAT_CATEGORIES; // Show all while loading
+
+    return STAT_CATEGORIES.filter(stat => {
+      const propStatName = STAT_CATEGORY_TO_PROP[stat];
+      if (!propStatName) return false;
+      return playerProps.some(p => p.statName === propStatName);
+    });
+  }, [playerProps]);
+
+  // Auto-select first available stat when props load or player changes
+  useEffect(() => {
+    if (availableStatCategories.length > 0 && !availableStatCategories.includes(activeStat)) {
+      setActiveStat(availableStatCategories[0] as StatCategory);
+    }
+  }, [availableStatCategories, activeStat]);
+
   // Graph average will be same as season avg for now
-  // Future: calculate from game logs based on selected window (Last 10, 15, 20, etc.)
   const graphAvg = seasonAvg;
 
   // Use dynamic values if available, otherwise fall back to static stats
@@ -253,18 +347,9 @@ export function MainContent({ player }: MainContentProps) {
     ? `${currentHitRate.hitCount}/${currentHitRate.totalGames}`
     : stats?.hitRateFraction ?? '0/0';
 
-  // Track headshot image loading state
-  const [imageError, setImageError] = useState(false);
-  const headshotSrc = player ? `/assets/${player.id}.png` : '';
-
-  // Reset image error state when player changes
-  useEffect(() => {
-    setImageError(false);
-  }, [player?.id]);
-
   if (!player || !stats) {
     return (
-      <main className="ml-[400px] pt-14 min-h-screen bg-background flex items-center justify-center">
+      <main className="lg:ml-[var(--sidebar-width)] pt-14 min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">
           <div className="text-6xl">🏀</div>
           <h2 className="text-xl font-semibold text-muted-foreground">Select a player</h2>
@@ -277,173 +362,53 @@ export function MainContent({ player }: MainContentProps) {
   }
 
   return (
-    <main className="ml-[400px] pt-14 min-h-screen bg-background">
-      <div className="p-6 space-y-6">
-        {/* Stat Category Tabs */}
-        <ScrollArea className="w-full">
-          <div className="flex gap-1 pb-2">
-            {STAT_CATEGORIES.map((stat) => (
-              <button
-                key={stat}
-                onClick={() => setActiveStat(stat as StatCategory)}
-                className={cn(
-                  'px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all duration-200',
-                  activeStat === stat
-                    ? 'bg-secondary text-foreground border-b-2 border-primary'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
-                )}
-              >
-                {stat}
-              </button>
-            ))}
-          </div>
-          <ScrollBar orientation="horizontal" />
-        </ScrollArea>
-
-        {/* Player Header Section */}
-        <div className="flex items-start justify-between gap-8 p-6 rounded-xl bg-card border border-border">
-          {/* Left: Player Info */}
-          <div className="flex items-start gap-4">
-            {/* Avatar / Headshot with team color gradient outline */}
-            <div className="relative">
-              {(() => {
-                const teamData = NBA_TEAMS[player.team as keyof typeof NBA_TEAMS];
-                const primaryColor = teamData?.color || '#6366f1';
-                const secondaryColor = teamData?.colorSecondary || '#8b5cf6';
-                return (
-                  <div
-                    className="w-[88px] h-[88px] rounded-full p-1 flex items-center justify-center"
-                    style={{
-                      background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})`,
-                    }}
+    <main className="lg:ml-[var(--sidebar-width)] pt-14 min-h-screen bg-background">
+      <div className="p-4 lg:p-6 space-y-4 lg:space-y-6">
+        {/* Stat Category Tabs - Only show categories with available props */}
+        <div className="relative">
+          <ScrollArea className="w-full">
+            <div className="flex gap-1 pb-2">
+              {isLoadingProps ? (
+                <div className="px-4 py-2 text-sm text-muted-foreground">Loading props...</div>
+              ) : availableStatCategories.length === 0 ? (
+                <div className="px-4 py-2 text-sm text-muted-foreground">No props available for this player</div>
+              ) : (
+                availableStatCategories.map((stat) => (
+                  <button
+                    key={stat}
+                    onClick={() => setActiveStat(stat as StatCategory)}
+                    className={cn(
+                      'px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all duration-200',
+                      activeStat === stat
+                        ? 'bg-secondary text-foreground border-b-2 border-primary'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+                    )}
                   >
-                    <div className="w-20 h-20 rounded-full bg-card flex items-center justify-center overflow-hidden">
-                      {!imageError ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={headshotSrc}
-                          alt={player.name}
-                          width={80}
-                          height={80}
-                          className="object-cover w-full h-full"
-                          onError={() => setImageError(true)}
-                        />
-                      ) : (
-                        <span className="text-2xl font-bold text-foreground">
-                          {player.name.split(' ').map(n => n[0]).join('')}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Name & Badges */}
-            <div className="space-y-2">
-              <div>
-                <h2 className="text-xl font-semibold">{player.name}</h2>
-                <p className="text-sm text-muted-foreground">{player.position}</p>
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                {player.badges?.map((badge) => (
-                  <Badge
-                    key={badge}
-                    variant="secondary"
-                    className="text-xs bg-muted/50 text-muted-foreground"
-                  >
-                    {badge}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Center: Stats Grid */}
-          <div className="flex gap-8">
-            <div className="text-center">
-              <div className="text-xs font-semibold text-muted-foreground tracking-wider uppercase mb-1">
-                SZN AVG
-              </div>
-              <div className={cn(
-                "text-3xl font-bold font-mono transition-colors duration-200",
-                isLoadingStats ? "text-muted-foreground" : "text-foreground"
-              )}>
-                {isLoadingStats ? '—' : (seasonAvg ?? '—')}
-              </div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs font-semibold text-muted-foreground tracking-wider uppercase mb-1">
-                GRAPH AVG
-              </div>
-              <div className={cn(
-                "text-3xl font-bold font-mono transition-colors duration-200",
-                isLoadingStats ? "text-muted-foreground" : "text-foreground"
-              )}>
-                {isLoadingStats ? '—' : (graphAvg ?? '—')}
-              </div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs font-semibold text-muted-foreground tracking-wider uppercase mb-1">
-                HIT RATE
-              </div>
-              <div className={cn(
-                "text-3xl font-bold font-mono transition-colors duration-200",
-                displayHitRate < 50 ? "text-red-500" : "text-green-500"
-              )}>
-                {displayHitRate}%
-                <span className="text-sm text-muted-foreground ml-1">
-                  [{displayHitRateFraction}]
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Right: Current Stat Prop Line */}
-          <div className="flex items-center gap-3 p-4 rounded-xl bg-secondary/50 border border-border">
-            {isLoadingProps ? (
-              <div className="text-sm text-muted-foreground">Loading...</div>
-            ) : currentProp ? (
-              <>
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">Line</div>
-                  <div className="text-xl font-bold font-mono">{currentProp.line}</div>
-                </div>
-                <div className="flex gap-2">
-                  <button className="px-3 py-2 rounded-lg bg-green-500/20 text-green-500 font-semibold text-sm hover:bg-green-500/30 transition-colors">
-                    O {formatOdds(currentProp.overOdds)}
+                    {stat}
                   </button>
-                  <button className="px-3 py-2 rounded-lg bg-red-500/20 text-red-500 font-semibold text-sm hover:bg-red-500/30 transition-colors">
-                    U {formatOdds(currentProp.underOdds)}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="text-sm text-muted-foreground">No line available</div>
-            )}
-          </div>
+                ))
+              )}
+            </div>
+            <ScrollBar orientation="horizontal" />
+          </ScrollArea>
+          {/* Right fade gradient when scrollable */}
+          <div className="absolute right-0 top-0 bottom-2 w-8 bg-gradient-to-l from-background to-transparent pointer-events-none" />
         </div>
 
-        {/* Filters Control Bar */}
-        <div className="flex items-center gap-4 flex-wrap">
-          {/* Season Selector */}
-          <div className="flex items-center gap-1 p-1 rounded-lg bg-secondary/50">
-            {seasons.map((season) => (
-              <button
-                key={season}
-                onClick={() => setActiveSeason(season)}
-                className={cn(
-                  'px-3 py-1.5 text-sm font-medium rounded-md transition-all duration-200',
-                  activeSeason === season
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {season}
-              </button>
-            ))}
-          </div>
+        {/* Player Header Section */}
+        <PlayerHeader
+          player={player}
+          seasonAvg={seasonAvg}
+          graphAvg={graphAvg}
+          hitRate={displayHitRate}
+          hitRateFraction={displayHitRateFraction}
+          currentProp={currentProp}
+          isLoadingStats={isLoadingStats}
+          isLoadingProps={isLoadingProps}
+        />
 
+        {/* Simplified Filters Control Bar */}
+        <div className="flex items-center gap-4">
           {/* Games Slider */}
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary/50">
             <Button
@@ -466,131 +431,114 @@ export function MainContent({ player }: MainContentProps) {
             >
               <Plus className="h-3 w-3" />
             </Button>
-            <span className="text-xs text-muted-foreground">Max ({gamesCount})</span>
           </div>
 
-          {/* Dropdowns */}
-          <Button variant="outline" size="sm" className="h-8 text-xs">
-            With/Out
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs">
-            Advanced Filters
-          </Button>
-
-          {/* Splits */}
-          <div className="flex items-center gap-1">
-            {splits.map((split) => (
-              <Button
-                key={split}
-                variant="ghost"
-                size="sm"
-                className="h-8 text-xs text-muted-foreground hover:text-foreground"
-              >
-                {split}
-              </Button>
-            ))}
-          </div>
-
-          {/* Rankings Toggle */}
-          <div className="ml-auto flex items-center gap-1 p-1 rounded-lg bg-secondary/50">
-            <span className="text-xs text-muted-foreground px-2">Rankings</span>
-            {(['All', 'L15'] as const).map((view) => (
-              <button
-                key={view}
-                onClick={() => setRankingsView(view)}
-                className={cn(
-                  'px-3 py-1 text-xs font-medium rounded-md transition-all duration-200',
-                  rankingsView === view
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {view}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Chart Section */}
-        <div className="relative p-6 rounded-xl bg-card border border-border">
-          {isLoadingLogs ? (
-            <div className="w-full h-[450px] flex items-center justify-center">
-              <div className="text-muted-foreground">Loading game data...</div>
+          {/* Active filter summary */}
+          {activeFilterCount > 0 && (
+            <div className="text-xs text-muted-foreground">
+              {filteredGameLogs.length} of {gameLogs.length} games
             </div>
-          ) : logsError ? (
-            <div className="w-full h-[450px] flex items-center justify-center">
-              <div className="text-destructive">{logsError}</div>
-            </div>
-          ) : (
-            <StatsChart
-              data={chartData}
-              initialLineValue={currentProp?.line ?? seasonAvg ?? 20.5}
-              onLineChange={handleLineChange}
-            />
           )}
 
-          {/* Legend */}
-          <div className="flex items-center justify-end gap-6 mt-4 pt-4 border-t border-border">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-green-500" />
-              <span className="text-xs text-muted-foreground">Over {displayLineValue}</span>
+          {/* Filter Panel Toggle Button */}
+          <Button
+            variant={isFilterPanelOpen ? 'secondary' : 'outline'}
+            size="sm"
+            className="ml-auto h-8 gap-2"
+            onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <span>Filters</span>
+            {activeFilterCount > 0 && (
+              <Badge variant="secondary" className="h-5 w-5 p-0 flex items-center justify-center text-xs">
+                {activeFilterCount}
+              </Badge>
+            )}
+          </Button>
+        </div>
+
+        {/* Chart Section with Filter Panel */}
+        <div className="flex gap-4">
+          {/* Chart Card - uses explicit width transition */}
+          <div
+            className="relative p-6 rounded-xl bg-card border border-border transition-[width] duration-300 ease-out overflow-hidden"
+            style={{ width: isFilterPanelOpen ? 'calc(100% - 296px)' : '100%' }}
+          >
+            {isLoadingLogs ? (
+              <div className="w-full h-[450px] flex items-center justify-center">
+                <div className="text-muted-foreground">Loading game data...</div>
+              </div>
+            ) : logsError ? (
+              <div className="w-full h-[450px] flex items-center justify-center">
+                <ErrorState message={logsError} onRetry={handleRetryLogs} />
+              </div>
+            ) : filteredChartData.length === 0 ? (
+              <div className="w-full h-[450px] flex items-center justify-center">
+                <div className="text-center space-y-2">
+                  <div className="text-muted-foreground">No games match the selected filters</div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFilters(DEFAULT_FILTERS)}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <StatsChart
+                data={filteredChartData}
+                initialLineValue={currentProp?.line ?? seasonAvg ?? 20.5}
+                onLineChange={handleLineChange}
+              />
+            )}
+
+            {/* Legend */}
+            <div className="flex items-center justify-end gap-6 mt-4 pt-4 border-t border-border">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded bg-green-500" />
+                <span className="text-xs text-muted-foreground">Over {displayLineValue}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded bg-red-500" />
+                <span className="text-xs text-muted-foreground">Under {displayLineValue}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded border-2 border-dashed border-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Upcoming</span>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-red-500" />
-              <span className="text-xs text-muted-foreground">Under {displayLineValue}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded border-2 border-dashed border-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Upcoming</span>
-            </div>
+          </div>
+
+          {/* Filter Panel - Slides in from right */}
+          <div
+            className={cn(
+              "rounded-xl bg-card border border-border overflow-hidden transition-all duration-300 ease-out flex-shrink-0",
+              isFilterPanelOpen
+                ? "w-[280px] opacity-100"
+                : "w-0 opacity-0 pointer-events-none"
+            )}
+          >
+            <FilterPanel
+              isOpen={isFilterPanelOpen}
+              filters={filters}
+              onFiltersChange={setFilters}
+              onClose={() => setIsFilterPanelOpen(false)}
+              availableOpponents={availableOpponents}
+              availableSeasons={availableSeasons}
+            />
           </div>
         </div>
 
         {/* Play Type Analysis Card */}
         {opponentName && (
-          <div className="p-6 rounded-xl bg-card border border-border">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Play Type Analysis</h3>
-              <span className="text-sm text-muted-foreground">vs {opponentName}</span>
-            </div>
-
-            {isLoadingMatchups ? (
-              <div className="text-sm text-muted-foreground text-center py-4">Loading matchups...</div>
-            ) : playTypeMatchups.length === 0 ? (
-              <div className="text-sm text-muted-foreground text-center py-4">No play type data available</div>
-            ) : (
-              <div className="space-y-2">
-                {/* Header */}
-                <div className="grid grid-cols-4 gap-4 text-xs font-medium text-muted-foreground uppercase tracking-wider pb-2 border-b border-border">
-                  <div>Play Type</div>
-                  <div className="text-right">Player PPG</div>
-                  <div className="text-right">Opp DEF Rank</div>
-                  <div className="text-right">Opp PPP</div>
-                </div>
-
-                {/* Rows */}
-                {playTypeMatchups.map((matchup) => (
-                  <div key={matchup.playType} className="grid grid-cols-4 gap-4 py-2 text-sm border-b border-border/50 last:border-0">
-                    <div className="font-medium">{matchup.playType}</div>
-                    <div className="text-right font-mono">
-                      {matchup.playerPpg.toFixed(1)}
-                      <span className="text-muted-foreground ml-1">({matchup.pctOfTotal.toFixed(0)}%)</span>
-                    </div>
-                    <div className={cn(
-                      "text-right font-mono font-semibold",
-                      matchup.oppRank >= 21 ? "text-green-500" :
-                      matchup.oppRank >= 11 ? "text-yellow-500" :
-                      matchup.oppRank >= 6 ? "text-orange-500" :
-                      "text-red-500"
-                    )}>
-                      #{matchup.oppRank}
-                    </div>
-                    <div className="text-right font-mono">{matchup.oppPpp.toFixed(3)}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <PlayTypeAnalysis
+            matchups={playTypeMatchups}
+            opponentName={opponentName}
+            isLoading={isLoadingMatchups}
+            error={matchupsError}
+            onRetry={handleRetryMatchups}
+          />
         )}
 
         {/* Shooting Zones Analysis Card */}

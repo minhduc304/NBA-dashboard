@@ -1,11 +1,14 @@
 """Play Types Collector - Collects Synergy play type statistics."""
 
+import logging
 from typing import List, Dict, Optional
 import time
 import sqlite3
 
 from .base import BaseCollector, Result
 from ..api.retry import RetryStrategy
+
+logger = logging.getLogger(__name__)
 
 
 # Standard play types (excluding Misc)
@@ -140,7 +143,8 @@ class PlayTypesCollector(BaseCollector):
                         'games_played': int(row['GP'])
                     })
 
-            except Exception:
+            except Exception as e:
+                logger.debug("Error fetching play type %s for player %d: %s", play_type, player_id, e)
                 continue
 
             if i < len(PLAY_TYPES):
@@ -330,7 +334,8 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
                         'games_played': int(row['GP'])
                     })
 
-            except Exception:
+            except Exception as e:
+                logger.debug("Error fetching defensive play type %s for team %d: %s", play_type, team_id, e)
                 continue
 
             if i < len(PLAY_TYPES):
@@ -382,30 +387,24 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
         all_teams = teams.get_teams()
         results = {'collected': 0, 'skipped': 0, 'errors': 0}
 
-        print(f"Collecting defensive play types for {len(all_teams)} teams...")
+        logger.info("Collecting defensive play types for %d teams...", len(all_teams))
 
         for i, team in enumerate(all_teams, 1):
             team_id = team['id']
-            team_abbr = team['abbreviation']
-
-            print(f"  [{i}/{len(all_teams)}] {team_abbr}...", end=" ")
 
             result = self.collect(team_id)
 
             if result.is_success:
                 results['collected'] += 1
-                print(f"Done ({len(result.data)} play types)")
             elif result.is_skipped:
                 results['skipped'] += 1
-                print("Skipped")
             else:
                 results['errors'] += 1
-                print(f"Error: {result.message}")
 
             if i < len(all_teams):
                 time.sleep(delay)
 
-        print(f"\nDefensive play types collection complete!")
-        print(f"Collected: {results['collected']}, Skipped: {results['skipped']}, Errors: {results['errors']}")
+        logger.info("Defensive play types collection complete! Collected: %d, Skipped: %d, Errors: %d",
+                   results['collected'], results['skipped'], results['errors'])
 
         return results

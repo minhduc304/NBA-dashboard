@@ -4,17 +4,25 @@ Model Training Orchestration
 Handles the complete training pipeline for prop prediction models.
 """
 
+import logging
 import os
+import time
 import joblib
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Literal
 from datetime import datetime
 
 from .config import (
     DEFAULT_DB_PATH, DEFAULT_MODEL_DIR, DEFAULT_TEST_DAYS, DEFAULT_VAL_DAYS,
     get_model_params,
 )
+
+logger = logging.getLogger(__name__)
+
+# Retry configuration for training
+MAX_TRAINING_RETRIES = 2
+RETRY_DELAY_SECONDS = 5
 from .data_loader import PropDataLoader
 from .features import FeatureEngineer
 from .models import PropRegressor, PropClassifier
@@ -70,6 +78,59 @@ class ModelTrainer:
         self._regressor_features = None
         self._classifier_features = None
         self._feature_selector = None
+        self._checkpoint_dir = os.path.join(model_dir, 'checkpoints')
+
+    def _save_checkpoint(self, stage: str, data: Dict) -> str:
+        """
+        Save training checkpoint on failure for recovery.
+
+        Args:
+            stage: Training stage ('regressor', 'classifier', 'feature_selection')
+            data: Data to checkpoint (features, model state, etc.)
+
+        Returns:
+            Path to checkpoint file
+        """
+        os.makedirs(self._checkpoint_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        checkpoint_path = os.path.join(
+            self._checkpoint_dir,
+            f"{self.stat_type}_{stage}_checkpoint_{timestamp}.joblib"
+        )
+
+        checkpoint_data = {
+            'stat_type': self.stat_type,
+            'stage': stage,
+            'timestamp': timestamp,
+            'regressor_features': self._regressor_features,
+            'classifier_features': self._classifier_features,
+            **data
+        }
+
+        joblib.dump(checkpoint_data, checkpoint_path)
+        logger.info("Checkpoint saved: %s", checkpoint_path)
+
+        return checkpoint_path
+
+    def load_checkpoint(self, checkpoint_path: str) -> Dict:
+        """
+        Load a training checkpoint for recovery.
+
+        Args:
+            checkpoint_path: Path to checkpoint file
+
+        Returns:
+            Checkpoint data dictionary
+        """
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        checkpoint_data = joblib.load(checkpoint_path)
+        logger.info("Checkpoint loaded: %s (stage=%s)",
+                   checkpoint_path, checkpoint_data.get('stage'))
+
+        return checkpoint_data
 
     def train(
         self,
@@ -79,13 +140,15 @@ class ModelTrainer:
         use_historical: bool = True,
         historical_val_days: int = 15,
         historical_test_days: int = 30,
+        calibrate: bool = True,
+        calibration_method: Literal['isotonic', 'sigmoid'] = 'isotonic',
     ) -> Dict:
         """
         Train both regressor and classifier with proper train/val/test split.
 
         Uses 3-way split to prevent data leakage:
         - Train: Model training
-        - Validation: Early stopping (prevents overfitting)
+        - Validation: Early stopping (prevents overfitting) + calibration
         - Test: Final evaluation (never seen during training)
 
         Args:
@@ -95,40 +158,28 @@ class ModelTrainer:
             use_historical: Use historical game logs for regressor
             historical_val_days: Days for regressor validation
             historical_test_days: Days for regressor final testing
+            calibrate: Apply probability calibration using validation set
+            calibration_method: 'isotonic' (flexible) or 'sigmoid' (Platt scaling)
 
         Returns:
             Dictionary with training metrics and feature importances
         """
         if verbose:
-            print(f"\nTraining models for: {self.stat_type}")
-            print("-" * 40)
+            logger.info("Training models for: %s", self.stat_type)
 
         results = {}
 
         # === Load auxiliary data for enhanced features ===
-        if verbose:
-            print("Loading auxiliary data for feature engineering...")
-
         matchup_stats = self.data_loader.get_player_vs_opponent_stats(self.stat_type)
         consistency_stats = self.data_loader.get_player_consistency_stats(self.stat_type)
         opp_defense = self.data_loader.get_opponent_stat_defense(self.stat_type)
 
-        if verbose:
-            print(f"  Matchup data: {len(matchup_stats)} player-opponent pairs")
-            print(f"  Consistency data: {len(consistency_stats)} players")
-            print(f"  Opponent defense data: {len(opp_defense)} teams")
-
         # === REGRESSOR: Train on historical game logs ===
         if use_historical:
-            if verbose:
-                print("Loading historical games for regressor...")
             hist_df = self.data_loader.load_historical_games(self.stat_type)
 
             if len(hist_df) == 0:
                 raise ValueError(f"No historical data found for {self.stat_type}")
-
-            if verbose:
-                print(f"  Loaded {len(hist_df)} historical games")
 
             # Engineer features with auxiliary data
             hist_df = self.feature_engineer.engineer_features(
@@ -156,11 +207,6 @@ class ModelTrainer:
             reg_val_df = hist_df[hist_df['game_date'].isin(reg_val_dates)]
             reg_test_df = hist_df[hist_df['game_date'].isin(reg_test_dates)]
 
-            if verbose:
-                print(f"  Regressor train: {len(reg_train_df):,} samples ({len(reg_train_dates)} days)")
-                print(f"  Regressor val:   {len(reg_val_df):,} samples ({len(reg_val_dates)} days)")
-                print(f"  Regressor test:  {len(reg_test_df):,} samples ({len(reg_test_dates)} days)")
-
             # Get regressor feature columns (no line features needed)
             all_reg_features = self.feature_engineer.get_regressor_features()
             self._regressor_features = [f for f in all_reg_features if f in hist_df.columns]
@@ -173,14 +219,20 @@ class ModelTrainer:
             y_test_reg = reg_test_df['actual_value'].values
 
             # Train regressor with validation set for early stopping
-            if verbose:
-                print("Training regressor (LightGBM)...")
-                print("  Using validation set for early stopping")
-            self.regressor.fit(
-                X_train_reg, y_train_reg,
-                eval_set=(X_val_reg, y_val_reg),  # Validation for early stopping
-                feature_names=self._regressor_features,
-            )
+            try:
+                self.regressor.fit(
+                    X_train_reg, y_train_reg,
+                    eval_set=(X_val_reg, y_val_reg),  # Validation for early stopping
+                    feature_names=self._regressor_features,
+                )
+            except Exception as e:
+                # Save checkpoint on failure
+                self._save_checkpoint('regressor', {
+                    'X_train_shape': X_train_reg.shape,
+                    'y_train_shape': y_train_reg.shape,
+                    'error': str(e),
+                })
+                raise
 
             # Evaluate on held-out TEST set (never seen during training)
             reg_pred = self.regressor.predict(X_test_reg)
@@ -194,19 +246,16 @@ class ModelTrainer:
             }
 
             if verbose:
-                print(f"  Regressor Test MAE:  {results['regressor']['mae']:.2f}")
-                print(f"  Regressor Test RMSE: {results['regressor']['rmse']:.2f}")
+                logger.info(
+                    "Regressor %s: Test MAE=%.2f, Test RMSE=%.2f",
+                    self.stat_type, results['regressor']['mae'], results['regressor']['rmse']
+                )
 
         # === CLASSIFIER: Train on prop outcomes (needs betting lines) ===
-        if verbose:
-            print("\nLoading prop outcomes for classifier...")
         clf_df = self.data_loader.load_training_data(self.stat_type)
 
         if len(clf_df) == 0:
             raise ValueError(f"No prop data found for {self.stat_type}")
-
-        if verbose:
-            print(f"  Loaded {len(clf_df)} prop outcomes")
 
         # Engineer features with auxiliary data
         clf_df = self.feature_engineer.engineer_features(
@@ -234,11 +283,6 @@ class ModelTrainer:
         clf_val_df = clf_df[clf_df['game_date'].isin(clf_val_dates)]
         clf_test_df = clf_df[clf_df['game_date'].isin(clf_test_dates)]
 
-        if verbose:
-            print(f"  Classifier train: {len(clf_train_df):,} samples ({len(clf_train_dates)} days)")
-            print(f"  Classifier val:   {len(clf_val_df):,} samples ({len(clf_val_dates)} days)")
-            print(f"  Classifier test:  {len(clf_test_df):,} samples ({len(clf_test_dates)} days)")
-
         # Get classifier feature columns (includes line features)
         all_clf_features = self.feature_engineer.get_classifier_features()
         self._classifier_features = [f for f in all_clf_features if f in clf_df.columns]
@@ -257,8 +301,6 @@ class ModelTrainer:
         )
 
         if use_feature_selection:
-            if verbose:
-                print("Training initial classifier for feature selection...")
 
             # Train initial model to get feature importances
             self.classifier.fit(
@@ -291,31 +333,36 @@ class ModelTrainer:
                 X_test_clf, [f for f in all_clf_features if f in clf_df.columns]
             )
 
-            if verbose:
-                removed = self._feature_selector.get_removed_features(
-                    [f for f in all_clf_features if f in clf_df.columns]
-                )
-                print(f"  Selected {len(self._classifier_features)} features, removed {len(removed)}")
-                if removed:
-                    print(f"  Removed: {', '.join(removed[:5])}{'...' if len(removed) > 5 else ''}")
-
             # Reinitialize classifier for clean retraining
             clf_params = get_model_params(self.stat_type, 'classifier', self.use_tuned_params)
             self.classifier = PropClassifier(**clf_params)
 
         # Train classifier with validation set for early stopping
-        if verbose:
-            print("Training classifier (XGBoost)...")
-            print("  Using validation set for early stopping")
-        self.classifier.fit(
-            X_train_clf, y_train_clf,
-            eval_set=(X_val_clf, y_val_clf),  # Validation for early stopping
-            feature_names=self._classifier_features,
-        )
+        try:
+            self.classifier.fit(
+                X_train_clf, y_train_clf,
+                eval_set=(X_val_clf, y_val_clf),  # Validation for early stopping
+                feature_names=self._classifier_features,
+            )
+        except Exception as e:
+            # Save checkpoint on failure
+            self._save_checkpoint('classifier', {
+                'X_train_shape': X_train_clf.shape,
+                'y_train_shape': y_train_clf.shape,
+                'feature_count': len(self._classifier_features),
+                'error': str(e),
+            })
+            raise
+
+        # Calibrate probabilities using validation set
+        if calibrate:
+            self.classifier.calibrate(X_val_clf, y_val_clf, method=calibration_method)
+            results['calibration'] = {
+                'method': calibration_method,
+                'calibration_samples': len(y_val_clf),
+            }
 
         # Evaluate on held-out TEST set (never seen during training)
-        if verbose:
-            print("Evaluating on held-out test set...")
         clf_pred = self.classifier.predict(X_test_clf)
         clf_proba = self.classifier.predict_proba(X_test_clf)
 
@@ -333,19 +380,19 @@ class ModelTrainer:
 
         # Combined evaluation report
         if verbose:
-            reg_metrics = results.get('regressor', {})
-            report = generate_evaluation_report(
-                clf_metrics, reg_metrics, bet_metrics, self.stat_type
+            logger.info(
+                "Classifier %s: Test Acc=%.1f%%, Val Acc=%.1f%%, ROI=%+.1f%%",
+                self.stat_type,
+                clf_metrics.get('accuracy', 0) * 100,
+                val_metrics.get('accuracy', 0) * 100,
+                bet_metrics.get('roi_pct', 0)
             )
-            print(report)
-
-            # Show validation vs test comparison
-            print("\nValidation vs Test Comparison:")
-            print(f"  Val Accuracy:  {val_metrics.get('accuracy', 0):.1%}")
-            print(f"  Test Accuracy: {clf_metrics.get('accuracy', 0):.1%}")
             diff = clf_metrics.get('accuracy', 0) - val_metrics.get('accuracy', 0)
             if abs(diff) > 0.05:
-                print(f"  WARNING: Large gap ({diff:+.1%}) may indicate overfitting")
+                logger.warning(
+                    "%s: Large val/test gap (%.1f%%) may indicate overfitting",
+                    self.stat_type, diff * 100
+                )
 
         # Feature importance
         results['feature_importance_regressor'] = self.regressor.get_feature_importance()
@@ -388,12 +435,6 @@ class ModelTrainer:
         reg_metrics = evaluate_regressor(y_test_reg, reg_pred, lines)
         clf_metrics = evaluate_classifier(y_test_clf, clf_pred, clf_proba)
         bet_metrics = calculate_betting_ev(clf_pred, y_test_clf)
-
-        if verbose:
-            report = generate_evaluation_report(
-                clf_metrics, reg_metrics, bet_metrics, self.stat_type
-            )
-            print(report)
 
         # Feature importance
         reg_importance = self.regressor.get_feature_importance()
@@ -442,6 +483,8 @@ class ModelTrainer:
             'feature_columns': self._classifier_features,
             'stat_type': self.stat_type,
             'trained_at': datetime.now().isoformat(),
+            'calibrated': self.classifier.is_calibrated,
+            'calibration_method': self.classifier.calibration_method,
         }
 
         joblib.dump(reg_data, reg_path)
@@ -493,6 +536,8 @@ def train_all_models(
     use_tuned_params: bool = True,
     max_classifier_features: Optional[int] = None,
     min_feature_importance: float = 0.001,
+    calibrate: bool = True,
+    calibration_method: Literal['isotonic', 'sigmoid'] = 'isotonic',
 ) -> Dict[str, Dict]:
     """
     Train models for multiple stat types.
@@ -506,6 +551,8 @@ def train_all_models(
         use_tuned_params: Use tuned params from Optuna if available
         max_classifier_features: Max features for classifier (None = no limit)
         min_feature_importance: Remove features below this threshold
+        calibrate: Apply probability calibration using validation set
+        calibration_method: 'isotonic' (flexible) or 'sigmoid' (Platt scaling)
 
     Returns:
         Dictionary mapping stat_type to results
@@ -518,19 +565,48 @@ def train_all_models(
     all_results = {}
 
     for stat_type in stat_types:
-        try:
-            trainer = ModelTrainer(
-                stat_type, db_path, model_dir,
-                use_tuned_params=use_tuned_params,
-                max_classifier_features=max_classifier_features,
-                min_feature_importance=min_feature_importance,
-            )
-            results = trainer.train(val_days=val_days, test_days=test_days)
-            trainer.save_models()
-            all_results[stat_type] = results
-            print(f"\n[OK] {stat_type} models saved")
-        except Exception as e:
-            print(f"\n[ERROR] {stat_type}: {e}")
-            all_results[stat_type] = {'error': str(e)}
+        trained = False
+
+        for attempt in range(1, MAX_TRAINING_RETRIES + 1):
+            try:
+                logger.info("Training %s (attempt %d/%d)", stat_type, attempt, MAX_TRAINING_RETRIES)
+
+                trainer = ModelTrainer(
+                    stat_type, db_path, model_dir,
+                    use_tuned_params=use_tuned_params,
+                    max_classifier_features=max_classifier_features,
+                    min_feature_importance=min_feature_importance,
+                )
+                results = trainer.train(
+                    val_days=val_days,
+                    test_days=test_days,
+                    calibrate=calibrate,
+                    calibration_method=calibration_method,
+                )
+                trainer.save_models()
+                all_results[stat_type] = results
+                logger.info("%s models saved (calibrated=%s)", stat_type, calibrate)
+                trained = True
+                break  # Success, exit retry loop
+
+            except ValueError as e:
+                # Data issues (not enough data, invalid features) - don't retry
+                logger.error("%s training failed (data issue): %s", stat_type, e)
+                all_results[stat_type] = {'error': str(e), 'error_type': 'data'}
+                break  # Don't retry data issues
+
+            except Exception as e:
+                logger.error("%s training failed (attempt %d): %s", stat_type, attempt, e)
+
+                if attempt < MAX_TRAINING_RETRIES:
+                    logger.info("Retrying %s in %d seconds...", stat_type, RETRY_DELAY_SECONDS)
+                    time.sleep(RETRY_DELAY_SECONDS)
+                else:
+                    # All retries exhausted
+                    all_results[stat_type] = {
+                        'error': str(e),
+                        'error_type': 'training',
+                        'attempts': attempt,
+                    }
 
     return all_results

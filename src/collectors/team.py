@@ -1,5 +1,6 @@
 """Team Collectors - Collects team-level statistics."""
 
+import logging
 from typing import List, Dict, Optional
 import time
 
@@ -8,6 +9,8 @@ from ..models.zones import TeamDefenseZone, TeamDefenseZones
 from ..db.zones import TeamDefenseZoneRepository
 from ..api.client import NBAApiClient
 from ..api.retry import RetryStrategy
+
+logger = logging.getLogger(__name__)
 
 
 class TeamDefenseCollector(BaseCollector):
@@ -115,31 +118,25 @@ class TeamDefenseCollector(BaseCollector):
         all_teams = nba_teams.get_teams()
         results = {'collected': 0, 'skipped': 0, 'errors': 0}
 
-        print(f"Collecting defensive zones for {len(all_teams)} teams...")
+        logger.info("Collecting defensive zones for %d teams...", len(all_teams))
 
         for i, team in enumerate(all_teams, 1):
             team_id = team['id']
-            team_abbr = team['abbreviation']
-
-            print(f"  [{i}/{len(all_teams)}] {team_abbr}...", end=" ")
 
             result = self.collect(team_id)
 
             if result.is_success:
                 results['collected'] += 1
-                print(f"Done ({len(result.data.zones)} zones)")
             elif result.is_skipped:
                 results['skipped'] += 1
-                print(f"Skipped")
             else:
                 results['errors'] += 1
-                print(f"Error: {result.message}")
 
             if i < len(all_teams):
                 time.sleep(delay)
 
-        print(f"\nTeam defense collection complete!")
-        print(f"Collected: {results['collected']}, Skipped: {results['skipped']}, Errors: {results['errors']}")
+        logger.info("Team defense collection complete! Collected: %d, Skipped: %d, Errors: %d",
+                   results['collected'], results['skipped'], results['errors'])
 
         return results
 
@@ -203,14 +200,15 @@ class TeamPaceCollector:
                         row.get('GP', 0),
                     ))
                     results['collected'] += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug("Error saving pace for team %d: %s", row['TEAM_ID'], e)
                     results['errors'] += 1
 
             conn.commit()
             conn.close()
 
         except Exception as e:
-            print(f"Error collecting team pace: {e}")
+            logger.error("Error collecting team pace: %s", e)
 
         return results
 
@@ -219,7 +217,7 @@ class TeamPaceCollector:
         total_results = {'collected': 0, 'errors': 0}
 
         for season in seasons:
-            print(f"Collecting pace for {season}...")
+            logger.info("Collecting pace for %s...", season)
             result = self.collect(season)
             total_results['collected'] += result['collected']
             total_results['errors'] += result['errors']
@@ -245,7 +243,9 @@ class TeamRosterCollector(BaseCollector):
         return True
 
     def collect(self, team_id: int) -> Result[Dict]:
-        """Collect roster for a team."""
+        """Collect roster for a team and update positions in player_stats."""
+        import sqlite3
+
         try:
             df = self._fetch_with_retry(
                 lambda: self.api_client.get_team_roster(team_id, self.season)
@@ -264,9 +264,25 @@ class TeamRosterCollector(BaseCollector):
                     'team_id': team_id,
                 })
 
+            # Update positions in player_stats table
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            positions_updated = 0
+            for player in players:
+                if player['position']:
+                    cursor.execute("""
+                        UPDATE player_stats
+                        SET position = ?, team_id = ?
+                        WHERE player_id = ?
+                    """, (player['position'], team_id, player['player_id']))
+                    if cursor.rowcount > 0:
+                        positions_updated += 1
+            conn.commit()
+            conn.close()
+
             return Result.success(
-                {'team_id': team_id, 'players': players},
-                f"Collected {len(players)} players for team {team_id}"
+                {'team_id': team_id, 'players': players, 'positions_updated': positions_updated},
+                f"Collected {len(players)} players, updated {positions_updated} positions"
             )
         except Exception as e:
             return Result.error(f"API error: {e}")

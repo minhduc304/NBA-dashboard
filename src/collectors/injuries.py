@@ -1,8 +1,11 @@
 """Injuries Collector - Collects current injury reports."""
 
+import logging
 from typing import Dict, List, Optional
 import sqlite3
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class InjuriesCollector:
@@ -32,39 +35,36 @@ class InjuriesCollector:
         stats = {'inserted': 0, 'source': None, 'errors': []}
         injuries = []
 
-        print("Collecting injury report...")
+        logger.info("Collecting injury report...")
 
         # Try NBA.com first
         try:
             injuries = self._fetch_from_nba_com()
             stats['source'] = 'nba.com'
-            print(f"  Found {len(injuries)} injuries from NBA.com")
+            logger.info("Found %d injuries from NBA.com", len(injuries))
         except Exception as e:
             stats['errors'].append(f"NBA.com: {e}")
-            print(f"  NBA.com failed: {e}")
+            logger.warning("NBA.com failed: %s", e)
 
             # Fallback to ESPN
             try:
                 injuries = self._fetch_from_espn()
                 stats['source'] = 'espn'
-                print(f"  Found {len(injuries)} injuries from ESPN")
+                logger.info("Found %d injuries from ESPN", len(injuries))
             except Exception as e2:
                 stats['errors'].append(f"ESPN: {e2}")
-                print(f"  ESPN also failed: {e2}")
+                logger.error("ESPN also failed: %s", e2)
                 return stats
 
         if not injuries:
-            print("  No injuries found from any source")
+            logger.warning("No injuries found from any source")
             return stats
 
         # Insert injuries into database
         stats['inserted'] = self._save_injuries(injuries, stats['source'])
 
-        print(f"\nInjury collection complete!")
-        print(f"  Source: {stats['source']}")
-        print(f"  Inserted/Updated: {stats['inserted']}")
-        if stats['errors']:
-            print(f"  Errors: {len(stats['errors'])}")
+        logger.info("Injury collection complete! Source: %s, Inserted/Updated: %d",
+                   stats['source'], stats['inserted'])
 
         return stats
 
@@ -162,7 +162,8 @@ class InjuriesCollector:
                 if cursor.rowcount > 0:
                     inserted += 1
 
-            except sqlite3.Error:
+            except sqlite3.Error as e:
+                logger.debug("Error saving injury for player %s: %s", injury.get('player_name'), e)
                 continue
 
         conn.commit()

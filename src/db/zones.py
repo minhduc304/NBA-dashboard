@@ -2,7 +2,7 @@
 
 import sqlite3
 from abc import abstractmethod
-from typing import Optional, List
+from typing import Optional, List, Set
 from .base import BaseRepository
 from ..models.zones import (
     ShootingZone, AssistZone, TeamDefenseZone,
@@ -31,6 +31,23 @@ class ZoneRepository(BaseRepository[PlayerZones]):
     @abstractmethod
     def save_assist_zones(self, player_id: int, season: str, zones: List[AssistZone]) -> None:
         """Save assist zones for a player."""
+        pass
+
+    @abstractmethod
+    def get_completed_game_ids(self, player_id: int, season: str) -> Set[str]:
+        """Get game IDs already processed for this player's assist zones."""
+        pass
+
+    @abstractmethod
+    def mark_game_completed(
+        self, player_id: int, season: str, game_id: str, game_date: str, assists_found: int
+    ) -> None:
+        """Mark a game as processed in the checkpoint table."""
+        pass
+
+    @abstractmethod
+    def accumulate_assist_zones(self, player_id: int, season: str, zones: List[AssistZone]) -> None:
+        """Add assists to existing zone totals (incremental update)."""
         pass
 
 
@@ -158,9 +175,18 @@ class SQLiteZoneRepository(ZoneRepository):
             conn.close()
 
     def save_assist_zones(self, player_id: int, season: str, zones: List[AssistZone]) -> None:
+        """
+        Save assist zones for a player.
+
+        IMPORTANT: Only replaces existing data if new zones are provided.
+        If zones is empty, existing data is preserved to prevent accidental deletion.
+        """
+        if not zones:
+            return  # Don't delete existing data if collection returned empty
+
         conn = self._get_connection()
         try:
-            # Clear existing zones for this player/season
+            # Clear existing zones for this player/season (safe because we have new data)
             conn.execute(
                 "DELETE FROM player_assist_zones WHERE player_id = ? AND season = ?",
                 (player_id, season)
@@ -169,8 +195,8 @@ class SQLiteZoneRepository(ZoneRepository):
             for zone in zones:
                 conn.execute("""
                     INSERT INTO player_assist_zones
-                    (player_id, season, zone_name, zone_area, zone_range, ast, fgm, fga)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (player_id, season, zone_name, zone_area, zone_range, ast, fgm, fga, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """, (
                     player_id, season, zone.zone_name, zone.zone_area,
                     zone.zone_range, zone.ast, zone.fgm, zone.fga
@@ -203,6 +229,63 @@ class SQLiteZoneRepository(ZoneRepository):
                 (player_id,)
             )
             return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def get_completed_game_ids(self, player_id: int, season: str) -> Set[str]:
+        """Get game IDs already processed for this player's assist zones."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                """SELECT game_id FROM assist_zones_checkpoint
+                   WHERE player_id = ? AND season = ? AND status = 'completed'""",
+                (player_id, season)
+            )
+            return {row['game_id'] for row in cursor.fetchall()}
+        finally:
+            conn.close()
+
+    def mark_game_completed(
+        self, player_id: int, season: str, game_id: str, game_date: str, assists_found: int
+    ) -> None:
+        """Mark a game as processed in the checkpoint table."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                INSERT INTO assist_zones_checkpoint
+                (player_id, season, game_id, game_date, status, assists_found, completed_at)
+                VALUES (?, ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(player_id, season, game_id) DO UPDATE SET
+                    status = 'completed',
+                    assists_found = excluded.assists_found,
+                    completed_at = CURRENT_TIMESTAMP
+            """, (player_id, season, game_id, game_date, assists_found))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def accumulate_assist_zones(self, player_id: int, season: str, zones: List[AssistZone]) -> None:
+        """Add assists to existing zone totals (incremental update)."""
+        if not zones:
+            return
+
+        conn = self._get_connection()
+        try:
+            for zone in zones:
+                conn.execute("""
+                    INSERT INTO player_assist_zones
+                    (player_id, season, zone_name, zone_area, zone_range, ast, fgm, fga, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(player_id, season, zone_name) DO UPDATE SET
+                        ast = ast + excluded.ast,
+                        fgm = fgm + excluded.fgm,
+                        fga = fga + excluded.fga,
+                        last_updated = CURRENT_TIMESTAMP
+                """, (
+                    player_id, season, zone.zone_name, zone.zone_area,
+                    zone.zone_range, zone.ast, zone.fgm, zone.fga
+                ))
+            conn.commit()
         finally:
             conn.close()
 
