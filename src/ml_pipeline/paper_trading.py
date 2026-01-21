@@ -474,7 +474,9 @@ class PaperTrader:
         """
         Update paper trades with actual results.
 
-        This should be run AFTER games complete.
+        This should be run AFTER games complete. Looks up results from both
+        prop_outcomes table AND directly from player_game_logs for any players
+        not found in prop_outcomes.
 
         Args:
             game_date: Date to update (default: yesterday)
@@ -483,6 +485,8 @@ class PaperTrader:
         Returns:
             Number of predictions updated
         """
+        from .config import STAT_COLUMNS
+
         if game_date is None:
             game_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
 
@@ -506,8 +510,10 @@ class PaperTrader:
 
         for row in pending:
             pred_id, player_name, stat_type, line, reg_pred, clf_pred = row
+            actual_value = None
+            hit_over = None
 
-            # Look up actual outcome
+            # First, try prop_outcomes table
             cursor.execute('''
                 SELECT actual_value, hit_over
                 FROM prop_outcomes
@@ -521,7 +527,23 @@ class PaperTrader:
             result = cursor.fetchone()
             if result:
                 actual_value, hit_over = result
+            else:
+                # Fallback: Look up directly from player_game_logs using player_name
+                stat_col = STAT_COLUMNS.get(stat_type, 'pts')
+                cursor.execute(f'''
+                    SELECT {stat_col}
+                    FROM player_game_logs
+                    WHERE LOWER(player_name) = LOWER(?)
+                    AND DATE(game_date) = DATE(?)
+                    LIMIT 1
+                ''', (player_name, game_date))
 
+                gl_result = cursor.fetchone()
+                if gl_result and gl_result[0] is not None:
+                    actual_value = gl_result[0]
+                    hit_over = 1 if actual_value > line else 0
+
+            if actual_value is not None:
                 # Calculate correctness
                 reg_correct = 1 if (reg_pred > line) == (hit_over == 1) else 0
                 clf_correct = 1 if (clf_pred == hit_over) else 0

@@ -15,6 +15,24 @@ from ..api.retry import RetryStrategy
 
 logger = logging.getLogger(__name__)
 
+# Position normalization map (full names to abbreviations)
+POSITION_MAP = {
+    'Guard': 'G',
+    'Forward': 'F',
+    'Center': 'C',
+    'Guard-Forward': 'G-F',
+    'Forward-Guard': 'F-G',
+    'Center-Forward': 'C-F',
+    'Forward-Center': 'F-C',
+}
+
+
+def normalize_position(position: Optional[str]) -> Optional[str]:
+    """Normalize position to standard abbreviation format."""
+    if not position:
+        return None
+    return POSITION_MAP.get(position, position)
+
 
 class PlayerStatsCollector(BaseCollector):
     """Collects player season statistics with quarter/half splits."""
@@ -75,11 +93,11 @@ class PlayerStatsCollector(BaseCollector):
         # Step 3: Fetch first half stats
         first_half_stats = self._fetch_half_stats(player_id, "First Half")
 
-        # Step 4: Get team ID and position
-        team_id, position = self._fetch_team_id_and_position(player_id)
+        # Step 4: Get player info (name, team ID, position)
+        team_id, position, player_name = self._fetch_player_info(player_id)
 
         # Step 5: Build PlayerStats model
-        stats = self._build_player_stats(row, player_id, team_id, position, q1_stats, first_half_stats)
+        stats = self._build_player_stats(row, player_id, team_id, position, player_name, q1_stats, first_half_stats)
 
         # Step 6: Save to repository
         self.repository.save(stats)
@@ -119,8 +137,12 @@ class PlayerStatsCollector(BaseCollector):
             logger.debug("Error fetching %s stats for player %d: %s", game_segment, player_id, e)
         return None
 
-    def _fetch_team_id_and_position(self, player_id: int) -> tuple[Optional[int], Optional[str]]:
-        """Fetch current team ID and position for player."""
+    def _fetch_player_info(self, player_id: int) -> tuple[Optional[int], Optional[str], Optional[str]]:
+        """Fetch player name, team ID, and position from commonplayerinfo endpoint.
+
+        Returns:
+            Tuple of (team_id, position, player_name)
+        """
         try:
             df = self._fetch_with_retry(
                 lambda: self.api_client.get_player_info(player_id)
@@ -129,10 +151,15 @@ class PlayerStatsCollector(BaseCollector):
                 row = df.iloc[0]
                 team_id = row.get('TEAM_ID')
                 position = row.get('POSITION', '')
-                return (int(team_id) if team_id else None, position if position else None)
+                player_name = row.get('DISPLAY_FIRST_LAST', '')
+                return (
+                    int(team_id) if team_id else None,
+                    normalize_position(position) if position else None,
+                    player_name if player_name else None
+                )
         except Exception as e:
-            logger.debug("Error fetching team ID/position for player %d: %s", player_id, e)
-        return None, None
+            logger.debug("Error fetching player info for player %d: %s", player_id, e)
+        return None, None, None
 
     def _build_player_stats(
         self,
@@ -140,6 +167,7 @@ class PlayerStatsCollector(BaseCollector):
         player_id: int,
         team_id: Optional[int],
         position: Optional[str],
+        player_name: Optional[str],
         q1_stats: Optional[Dict],
         first_half_stats: Optional[Dict]
     ) -> PlayerStats:
@@ -153,7 +181,7 @@ class PlayerStatsCollector(BaseCollector):
 
         stats = PlayerStats(
             player_id=player_id,
-            player_name=row.get('PLAYER_NAME', ''),
+            player_name=player_name or '',
             season=self.season,
             games_played=int(row.get('GP', 0)),
             team_id=team_id,

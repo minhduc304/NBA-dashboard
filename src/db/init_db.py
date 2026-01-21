@@ -171,6 +171,7 @@ def init_database(db_path: str = None) -> None:
         CREATE TABLE IF NOT EXISTS player_game_logs (
             game_id TEXT,
             player_id TEXT,
+            player_name TEXT,
             team_id INTEGER,
             season TEXT,
             game_date DATE,

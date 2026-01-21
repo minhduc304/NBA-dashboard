@@ -15,6 +15,7 @@ Commands:
 """
 
 import click
+import logging
 import os
 import sys
 
@@ -24,14 +25,32 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from src.config import APIConfig
 
+
+def setup_logging(verbose: bool):
+    """Configure logging to output to stdout."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(message)s',  # Simple format for CLI
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
+
 @click.group()
 @click.option('--db', default='data/nba_stats.db', help='Database path')
 @click.option('--delay', default=APIConfig().delay, type=float, help='API delay in seconds')
 @click.option('--rostered-only', is_flag=True, help='Only process rostered players')
-@click.option('-v', '--verbose', is_flag=True, help='Verbose output')
+@click.option('-v', '--verbose', is_flag=True, help='Verbose output (show DEBUG logs)')
+@click.option('-q', '--quiet', is_flag=True, help='Quiet mode (only show warnings/errors)')
 @click.pass_context
-def cli(ctx, db, delay, rostered_only, verbose):
+def cli(ctx, db, delay, rostered_only, verbose, quiet):
     """NBA Stats Dashboard - Data collection and ML predictions."""
+    # Configure logging based on verbosity
+    if quiet:
+        logging.basicConfig(level=logging.WARNING, format='%(message)s')
+    else:
+        setup_logging(verbose)
+
     ctx.ensure_object(dict)
     ctx.obj['db'] = db
     ctx.obj['delay'] = delay
