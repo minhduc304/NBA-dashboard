@@ -271,6 +271,79 @@ class NBAStatsCollector:
         collector = InjuriesCollector(db_path=self.db_path)
         return collector.collect()
 
+    def collect_game_scores(self) -> Dict[str, int]:
+        """
+        Collect game scores and update schedule table.
+
+        Uses the scoreboard endpoint to get recent game results.
+        """
+        from nba_api.stats.endpoints import scoreboardv2
+        from datetime import datetime, timedelta
+
+        logger.info("Collecting game scores...")
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        updated = 0
+        # Check last few days of games
+        for days_ago in range(7):
+            game_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
+
+            try:
+                scoreboard = scoreboardv2.ScoreboardV2(
+                    game_date=game_date,
+                    timeout=30
+                )
+                games_df = scoreboard.get_data_frames()[0]  # GameHeader
+
+                if games_df.empty:
+                    continue
+
+                for _, game in games_df.iterrows():
+                    game_id = game.get('GAME_ID')
+                    game_status = game.get('GAME_STATUS_TEXT', '')
+                    home_team_id = game.get('HOME_TEAM_ID')
+                    away_team_id = game.get('VISITOR_TEAM_ID')
+
+                    # Get scores from line score
+                    line_score_df = scoreboard.get_data_frames()[1]  # LineScore
+                    home_score = None
+                    away_score = None
+
+                    if not line_score_df.empty:
+                        home_row = line_score_df[line_score_df['TEAM_ID'] == home_team_id]
+                        away_row = line_score_df[line_score_df['TEAM_ID'] == away_team_id]
+
+                        if not home_row.empty:
+                            pts = home_row.iloc[0].get('PTS')
+                            home_score = int(pts) if pts is not None else None
+                        if not away_row.empty:
+                            pts = away_row.iloc[0].get('PTS')
+                            away_score = int(pts) if pts is not None else None
+
+                    # Update schedule
+                    cursor.execute('''
+                        UPDATE schedule
+                        SET home_score = COALESCE(?, home_score),
+                            away_score = COALESCE(?, away_score),
+                            game_status = COALESCE(?, game_status),
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE game_id = ?
+                    ''', (home_score, away_score, game_status, game_id))
+
+                    if cursor.rowcount > 0:
+                        updated += 1
+
+                conn.commit()
+
+            except Exception as e:
+                logger.warning("Error fetching scores for %s: %s", game_date, e)
+
+        conn.close()
+        logger.info("Updated %d game scores", updated)
+        return {'updated': updated}
+
     def get_player_from_database(self, player_id: int) -> Optional[Dict]:
         """Get a player's current stats from the database."""
         player_stats = self._player_repo.get_by_id(player_id)
@@ -433,18 +506,22 @@ class NBAStatsCollector:
 
         for i, player in enumerate(players_to_update, 1):
             player_id = player['id'] if isinstance(player, dict) else player
+            player_name = player.get('full_name', f'ID:{player_id}') if isinstance(player, dict) else f'ID:{player_id}'
 
             try:
                 result = self.player_stats_collector.collect(player_id)
 
                 if result.is_success:
                     updated += 1
+                    logger.info("[%d/%d] ✓ %s - %s", i, total, player_name, result.message)
                 elif result.is_skipped:
                     skipped += 1
+                    logger.debug("[%d/%d] - %s skipped", i, total, player_name)
                 else:
                     errors += 1
+                    logger.warning("[%d/%d] ✗ %s - %s", i, total, player_name, result.message)
             except Exception as e:
-                logger.error("Error collecting player %s: %s", player_id, e)
+                logger.error("[%d/%d] ✗ %s - Error: %s", i, total, player_name, e)
                 errors += 1
 
             if i < total:
@@ -476,9 +553,9 @@ class NBAStatsCollector:
 
             # Rename columns to match database schema
             column_mapping = {
-                'SEASON_YEAR': 'season', 'PLAYER_ID': 'player_id', 'TEAM_ID': 'team_id',
-                'GAME_ID': 'game_id', 'GAME_DATE': 'game_date', 'MATCHUP': 'matchup',
-                'MIN': 'min', 'PTS': 'pts', 'REB': 'reb', 'AST': 'ast',
+                'SEASON_YEAR': 'season', 'PLAYER_ID': 'player_id', 'PLAYER_NAME': 'player_name',
+                'TEAM_ID': 'team_id', 'GAME_ID': 'game_id', 'GAME_DATE': 'game_date',
+                'MATCHUP': 'matchup', 'MIN': 'min', 'PTS': 'pts', 'REB': 'reb', 'AST': 'ast',
                 'STL': 'stl', 'BLK': 'blk', 'FGM': 'fgm', 'FGA': 'fga',
                 'FG_PCT': 'fg_pct', 'FG3M': 'fg3m', 'FG3A': 'fg3a', 'FG3_PCT': 'fg3_pct',
                 'FTM': 'ftm', 'FTA': 'fta', 'FT_PCT': 'ft_pct', 'TOV': 'tov',
@@ -494,17 +571,17 @@ class NBAStatsCollector:
 
             insert_sql = '''
                 INSERT OR IGNORE INTO player_game_logs (
-                    game_id, player_id, team_id, season, game_date, matchup,
+                    game_id, player_id, player_name, team_id, season, game_date, matchup,
                     min, pts, reb, ast, stl, blk,
                     fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
                     ftm, fta, ft_pct, tov, pf, oreb, dreb
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
 
             for _, row in df.iterrows():
                 cursor.execute(insert_sql, (
-                    row.get('game_id'), row.get('player_id'), row.get('team_id'),
-                    row.get('season'), row.get('game_date'), row.get('matchup'),
+                    row.get('game_id'), row.get('player_id'), row.get('player_name'),
+                    row.get('team_id'), row.get('season'), row.get('game_date'), row.get('matchup'),
                     row.get('min'), row.get('pts'), row.get('reb'), row.get('ast'),
                     row.get('stl'), row.get('blk'), row.get('fgm'), row.get('fga'),
                     row.get('fg_pct'), row.get('fg3m'), row.get('fg3a'), row.get('fg3_pct'),
