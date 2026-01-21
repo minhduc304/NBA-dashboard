@@ -186,6 +186,30 @@ export interface ApiTeamDefensiveZone {
   last_updated: string;
 }
 
+// Shooting zone matchup with league context
+export interface ApiShootingZoneMatchup {
+  zoneName: string;
+  playerFgm: number;
+  playerFga: number;
+  playerFgPct: number;       // Player's FG% (as percentage, e.g., 38.5)
+  playerVolumePct: number;   // % of player's total FGA from this zone
+  oppFgPct: number;          // Opponent allows (as percentage)
+  oppRank: number;           // Opponent rank 1-30 (1 = best defense)
+  leagueAvgPct: number;      // League average FG% for this zone
+  advantage: number;         // League-adjusted advantage
+  isThree: boolean;          // Is this a 3-point zone
+  hasData: boolean;
+}
+
+export interface ApiShootingZoneMatchupResponse {
+  playerName: string;
+  playerId: number;
+  opponentName: string;
+  opponentId: number;
+  totalFga: number;
+  zones: ApiShootingZoneMatchup[];
+}
+
 /**
  * Fetch all players from the API
  */
@@ -352,6 +376,22 @@ export async function fetchTeamDefensiveZones(teamId: number): Promise<ApiTeamDe
     throw new Error(`Failed to fetch defensive zones: ${response.statusText}`);
   }
 
+  return response.json();
+}
+
+/**
+ * Fetch shooting zone matchup with league context (league avg, opponent rank, volume)
+ */
+export async function fetchShootingZoneMatchup(
+  playerId: number,
+  opponentId: number
+): Promise<ApiShootingZoneMatchupResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/players/${playerId}/shooting-zones/vs/${opponentId}`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch shooting zone matchup: ${response.statusText}`);
+  }
   return response.json();
 }
 

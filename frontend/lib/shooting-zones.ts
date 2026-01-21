@@ -108,14 +108,18 @@ export function combineZoneData(
     const oppDefFgPct = oppZone?.opp_fg_pct ?? 0;
     const hasData = !!playerZone && !!oppZone;
 
+    // Note: player_shooting_zones stores fg_pct as percentage (38.9 = 38.9%)
+    // But team_defensive_zones stores opp_fg_pct as decimal (0.389 = 38.9%)
+    const oppDefPctNormalized = oppDefFgPct * 100;
+
     return {
       zoneName,
-      playerFgPct: playerFgPct * 100, // Convert to percentage
+      playerFgPct, // Already stored as percentage in DB (e.g., 38.5 = 38.5%)
       playerFga: playerZone?.fga ?? 0,
       playerFgm: playerZone?.fgm ?? 0,
-      oppDefFgPct: oppDefFgPct * 100, // Convert to percentage
+      oppDefFgPct: oppDefPctNormalized, // Convert from decimal to percentage
       oppDefFga: oppZone?.opp_fga ?? 0,
-      advantage: (playerFgPct - oppDefFgPct) * 100, // Difference in percentage points
+      advantage: playerFgPct - oppDefPctNormalized, // Difference in percentage points
       hasData,
     };
   });

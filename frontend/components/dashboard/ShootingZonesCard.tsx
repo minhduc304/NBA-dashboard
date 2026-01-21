@@ -5,13 +5,9 @@ import { Loader2 } from 'lucide-react';
 import { BasketballCourt } from './BasketballCourt';
 import { ErrorState } from '@/components/ui/error-state';
 import {
-  fetchPlayerShootingZones,
-  fetchTeamDefensiveZones,
+  fetchShootingZoneMatchup,
+  ApiShootingZoneMatchupResponse,
 } from '@/lib/api';
-import {
-  ShootingZoneMatchup,
-  combineZoneData,
-} from '@/lib/shooting-zones';
 
 interface ShootingZonesCardProps {
   playerId: number;
@@ -24,7 +20,7 @@ export function ShootingZonesCard({
   opponentId,
   opponentName,
 }: ShootingZonesCardProps) {
-  const [zoneMatchups, setZoneMatchups] = useState<ShootingZoneMatchup[]>([]);
+  const [matchupData, setMatchupData] = useState<ApiShootingZoneMatchupResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
@@ -44,15 +40,9 @@ export function ShootingZonesCard({
       setError(null);
 
       try {
-        // Fetch both datasets in parallel
-        const [playerZones, opponentZones] = await Promise.all([
-          fetchPlayerShootingZones(playerId),
-          fetchTeamDefensiveZones(opponentId),
-        ]);
-
-        // Combine the data
-        const combined = combineZoneData(playerZones, opponentZones);
-        setZoneMatchups(combined);
+        // Fetch combined matchup data with league context
+        const data = await fetchShootingZoneMatchup(playerId, opponentId);
+        setMatchupData(data);
       } catch (err) {
         console.error('Error fetching shooting zones:', err);
         setError('Unable to load shooting zone data');
@@ -65,7 +55,7 @@ export function ShootingZonesCard({
   }, [playerId, opponentId, retryCount]);
 
   // Check if we have any data
-  const hasData = zoneMatchups.some((z) => z.hasData);
+  const hasData = matchupData?.zones.some((z) => z.hasData) ?? false;
 
   return (
     <div className="p-6 rounded-xl bg-card border border-border">
@@ -90,7 +80,7 @@ export function ShootingZonesCard({
       ) : (
         <div className="space-y-4">
           {/* Basketball Court Visualization */}
-          <BasketballCourt zoneData={zoneMatchups} />
+          <BasketballCourt zoneData={matchupData!.zones} totalFga={matchupData!.totalFga} />
 
           {/* Color Legend */}
           <div className="flex items-center justify-center gap-3 pt-2">
@@ -100,28 +90,37 @@ export function ShootingZonesCard({
                   className="w-3 h-3 rounded-sm"
                   style={{ backgroundColor: 'oklch(0.60 0.22 25)' }}
                 />
-                <span className="text-muted-foreground">Unfavorable</span>
+                <span className="text-muted-foreground">Below Avg</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <div
                   className="w-3 h-3 rounded-sm"
                   style={{ backgroundColor: 'oklch(0.80 0.18 85)' }}
                 />
-                <span className="text-muted-foreground">Neutral</span>
+                <span className="text-muted-foreground">League Avg</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <div
                   className="w-3 h-3 rounded-sm"
                   style={{ backgroundColor: 'oklch(0.65 0.20 145)' }}
                 />
-                <span className="text-muted-foreground">Favorable</span>
+                <span className="text-muted-foreground">Above Avg</span>
               </div>
             </div>
           </div>
 
+          {/* Opacity Legend */}
+          <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+            <span className="opacity-40">○</span>
+            <span>Low volume</span>
+            <span className="mx-2">→</span>
+            <span>High volume</span>
+            <span className="opacity-100">●</span>
+          </div>
+
           {/* Help text */}
           <p className="text-xs text-center text-muted-foreground">
-            Hover over zones to see FG% matchup details
+            Color = matchup quality • Opacity = shot volume
           </p>
         </div>
       )}
