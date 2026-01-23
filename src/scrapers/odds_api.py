@@ -42,6 +42,9 @@ class OddsAPI:
         'player_rebounds_assists',
     ]
 
+    # Request timeout in seconds (connect, read)
+    DEFAULT_TIMEOUT = (10, 30)
+
     def __init__(self, api_key: Optional[str] = None):
         """
         Initialize API client.
@@ -65,7 +68,7 @@ class OddsAPI:
         if params:
             request_params.update(params)
 
-        response = self.session.get(url, params=request_params)
+        response = self.session.get(url, params=request_params, timeout=self.DEFAULT_TIMEOUT)
 
         # Track API quota from headers
         self._requests_remaining = response.headers.get('x-requests-remaining')

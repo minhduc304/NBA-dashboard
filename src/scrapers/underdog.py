@@ -45,7 +45,7 @@ class UnderdogScraper:
             self.config = json.load(json_file)
 
     def fetch_data(self, retry_on_auth_fail=True):
-        ud_pickem_response = requests.get(self.config["ud_pickem_url"], headers=self.config["headers"])
+        ud_pickem_response = requests.get(self.config["ud_pickem_url"], headers=self.config["headers"], timeout=(10, 30))
 
         if ud_pickem_response.status_code != 200:
             if ud_pickem_response.status_code == 429:
