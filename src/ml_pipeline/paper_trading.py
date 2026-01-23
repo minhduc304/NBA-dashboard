@@ -578,6 +578,7 @@ class PaperTrader:
         self,
         days: Optional[int] = None,
         stat_type: Optional[str] = None,
+        sportsbook: Optional[str] = None,
         verbose: bool = True,
     ) -> Dict:
         """
@@ -588,6 +589,7 @@ class PaperTrader:
         Args:
             days: Only include last N days (None = all)
             stat_type: Filter by stat type (None = all)
+            sportsbook: Filter by sportsbook (e.g., 'underdog', 'bovada')
             verbose: Print report
 
         Returns:
@@ -602,6 +604,10 @@ class PaperTrader:
         if stat_type:
             where_clauses.append("stat_type = ?")
             params.append(stat_type)
+
+        if sportsbook:
+            where_clauses.append("sportsbook = ?")
+            params.append(sportsbook)
 
         if days:
             cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -707,7 +713,7 @@ class PaperTrader:
         }
 
         if verbose:
-            self._print_report(results, days, stat_type)
+            self._print_report(results, days, stat_type, sportsbook)
 
         return results
 
@@ -716,10 +722,15 @@ class PaperTrader:
         results: Dict,
         days: Optional[int],
         stat_type: Optional[str],
+        sportsbook: Optional[str] = None,
     ):
         """Log paper trading report."""
+        filter_info = ""
+        if sportsbook:
+            filter_info = f" [{sportsbook}]"
         logger.info(
-            "PAPER TRADING REPORT: %d predictions (%s to %s), Clf Acc=%.1f%%, ROI=%+.1f%%",
+            "PAPER TRADING REPORT%s: %d predictions (%s to %s), Clf Acc=%.1f%%, ROI=%+.1f%%",
+            filter_info,
             results['total_predictions'],
             results['first_date'],
             results['last_date'],
