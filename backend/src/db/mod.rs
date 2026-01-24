@@ -186,6 +186,144 @@ pub async fn get_defensive_play_types(pool: &SqlitePool, team_id: i64) -> Result
     .await
 }
 
+/// Get shooting zone matchup with league context (league averages, opponent ranks, volume)
+pub async fn get_shooting_zone_matchup(
+    pool: &SqlitePool,
+    player_id: i64,
+    opponent_team_id: i64
+) -> Result<crate::models::ShootingZoneMatchupResponse, sqlx::Error> {
+    use crate::models::{ShootingZoneMatchup, ShootingZoneMatchupResponse};
+
+    // Get player name
+    let player_name: String = sqlx::query_scalar(
+        r#"SELECT player_name FROM player_stats WHERE player_id = ? LIMIT 1"#
+    )
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_else(|| "Unknown".to_string());
+
+    // Get opponent team name
+    let opponent_name: String = sqlx::query_scalar(
+        r#"SELECT full_name FROM teams WHERE team_id = ? LIMIT 1"#
+    )
+    .bind(opponent_team_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_else(|| "Unknown".to_string());
+
+    // Get player's shooting zones
+    let player_zones = get_shooting_zones(pool, player_id).await?;
+
+    // Calculate player's total FGA
+    let total_fga: f32 = player_zones.iter().map(|z| z.fga).sum();
+
+    // Get opponent's defensive zones
+    let opponent_def_zones = get_defensive_zones(pool, opponent_team_id).await?;
+
+    // Get all team defensive zones to calculate league averages and rankings
+    #[derive(sqlx::FromRow)]
+    struct ZoneDefense {
+        team_id: i64,
+        zone_name: String,
+        opp_fg_pct: f32,
+    }
+    let all_def_zones: Vec<ZoneDefense> = sqlx::query_as(
+        r#"SELECT team_id, zone_name, opp_fg_pct FROM team_defensive_zones ORDER BY zone_name, opp_fg_pct"#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Zone names and whether they're 3-point zones
+    let zone_names = [
+        ("Above the Break 3", true),
+        ("In The Paint (Non-RA)", false),
+        ("Left Corner 3", true),
+        ("Mid-Range", false),
+        ("Restricted Area", false),
+        ("Right Corner 3", true),
+    ];
+
+    let mut zones = Vec::new();
+
+    for (zone_name, is_three) in zone_names.iter() {
+        let player_zone = player_zones.iter().find(|z| z.zone_name == *zone_name);
+        let opp_zone = opponent_def_zones.iter().find(|z| z.zone_name == *zone_name);
+
+        // Calculate league average for this zone
+        let zone_defenses: Vec<&ZoneDefense> = all_def_zones
+            .iter()
+            .filter(|z| z.zone_name == *zone_name)
+            .collect();
+
+        let league_avg: f32 = if !zone_defenses.is_empty() {
+            zone_defenses.iter().map(|z| z.opp_fg_pct).sum::<f32>() / zone_defenses.len() as f32
+        } else {
+            0.0
+        };
+
+        // Calculate opponent rank (1 = best defense = lowest opp_fg_pct)
+        let opp_rank = if let Some(opp) = opp_zone {
+            zone_defenses
+                .iter()
+                .position(|z| z.team_id == opponent_team_id)
+                .map(|pos| (pos + 1) as i32)
+                .unwrap_or(15)
+        } else {
+            15 // Default to middle if no data
+        };
+
+        let has_data = player_zone.is_some() && opp_zone.is_some();
+
+        // Player FG% is already stored as percentage (38.9 = 38.9%)
+        let player_fg_pct = player_zone.map(|z| z.fg_pct).unwrap_or(0.0);
+        let player_fga = player_zone.map(|z| z.fga).unwrap_or(0.0);
+        let player_fgm = player_zone.map(|z| z.fgm).unwrap_or(0.0);
+
+        // Opponent FG% is stored as decimal (0.35 = 35%), convert to percentage
+        let opp_fg_pct = opp_zone.map(|z| z.opp_fg_pct * 100.0).unwrap_or(0.0);
+        let league_avg_pct = league_avg * 100.0;
+
+        // Calculate player's volume percentage
+        let player_volume_pct = if total_fga > 0.0 {
+            (player_fga / total_fga) * 100.0
+        } else {
+            0.0
+        };
+
+        // League-adjusted advantage:
+        // playerVsLeague = how much better/worse player is vs league avg
+        // oppVsLeague = how much more/less opponent allows vs league avg (positive = bad defense)
+        // advantage = playerVsLeague + oppVsLeague
+        let player_vs_league = player_fg_pct - league_avg_pct;
+        let opp_vs_league = opp_fg_pct - league_avg_pct; // positive = allows more = bad defense
+        let advantage = player_vs_league + opp_vs_league;
+
+        zones.push(ShootingZoneMatchup {
+            zone_name: zone_name.to_string(),
+            player_fgm,
+            player_fga,
+            player_fg_pct,
+            player_volume_pct,
+            opp_fg_pct,
+            opp_rank,
+            league_avg_pct,
+            advantage,
+            is_three: *is_three,
+            has_data,
+        });
+    }
+
+    Ok(ShootingZoneMatchupResponse {
+        player_name,
+        player_id,
+        opponent_name,
+        opponent_id: opponent_team_id,
+        total_fga,
+        zones,
+    })
+}
+
 // Schedule queries - read from cached SQLite data
 pub async fn get_schedule_by_date(pool: &SqlitePool, date: &str) -> Result<Vec<ScheduleRow>, sqlx::Error> {
     sqlx::query_as::<_, ScheduleRow>(
@@ -256,9 +394,11 @@ pub async fn get_team_roster(pool: &SqlitePool, team_id: i64) -> Result<Vec<Rost
                ps.position,
                pi.injury_status,
                pi.injury_description,
-               (SELECT 1 FROM underdog_props WHERE full_name = ps.player_name
-                OR full_name = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-                    ps.player_name, 'ć', 'c'), 'č', 'c'), 'š', 's'), 'ž', 'z'), 'đ', 'd')
+               (SELECT 1 FROM underdog_props
+                WHERE (full_name = ps.player_name
+                       OR full_name = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                           ps.player_name, 'ć', 'c'), 'č', 'c'), 'š', 's'), 'ž', 'z'), 'đ', 'd'))
+                AND DATE(scheduled_at) >= DATE('now')
                 LIMIT 1) IS NOT NULL as has_props
            FROM player_stats ps
            LEFT JOIN player_injuries pi ON ps.player_id = pi.player_id

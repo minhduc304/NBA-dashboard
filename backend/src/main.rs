@@ -69,6 +69,7 @@ async fn main() {
         .route("/api/players/{id}/props", get(routes::props::get_player_props))
         .route("/api/players/{id}/play-type-matchup", get(routes::players::get_player_play_type_matchup))
         .route("/api/players/{id}/assist-zone-matchup", get(routes::players::get_player_assist_zone_matchup))
+        .route("/api/players/{player_id}/shooting-zones/vs/{opponent_id}", get(routes::players::get_player_shooting_zone_matchup))
 
         // Team endpoints
         .route("/api/teams", get(routes::teams::get_teams))

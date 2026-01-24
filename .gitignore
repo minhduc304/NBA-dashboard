@@ -7,7 +7,6 @@ underdog_config.json
 nba_stats_backup.db
 /logs
 /models
-/scripts
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

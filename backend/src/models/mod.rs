@@ -249,7 +249,35 @@ pub struct TeamDefensiveZones {
     pub last_updated: String
 }
 
-// 
+// Shooting zone matchup with league context
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShootingZoneMatchup {
+    pub zone_name: String,
+    pub player_fgm: f32,
+    pub player_fga: f32,
+    pub player_fg_pct: f32,       // Player's FG% (already as percentage, e.g., 38.5)
+    pub player_volume_pct: f32,   // % of player's total FGA from this zone
+    pub opp_fg_pct: f32,          // Opponent allows (as percentage)
+    pub opp_rank: i32,            // Opponent rank 1-30 (1 = best defense)
+    pub league_avg_pct: f32,      // League average FG% for this zone
+    pub advantage: f32,           // League-adjusted advantage
+    pub is_three: bool,           // Is this a 3-point zone
+    pub has_data: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShootingZoneMatchupResponse {
+    pub player_name: String,
+    pub player_id: i64,
+    pub opponent_name: String,
+    pub opponent_id: i64,
+    pub total_fga: f32,
+    pub zones: Vec<ShootingZoneMatchup>,
+}
+
+//
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct TeamDefensivePlayTypes {
     pub team_id: i64,

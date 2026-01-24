@@ -572,22 +572,26 @@ def paper_update(ctx, date):
 @click.option('--days', default=None, type=int, help='Last N days only')
 @click.option('--stat', default=None, help='Specific stat type')
 @click.option('--sportsbook', '-s', default=None, help='Filter by sportsbook (e.g., underdog, bovada)')
+@click.option('--min-confidence', '-c', default=None, type=float,
+              help='Minimum confidence threshold (e.g., 0.60 or 0.65)')
 @click.pass_context
-def paper_report(ctx, days, stat, sportsbook):
+def paper_report(ctx, days, stat, sportsbook, min_confidence):
     """Show paper trading performance report.
 
     This shows truly out-of-sample performance - only predictions
     that were logged BEFORE games happened.
 
     Examples:
-        nba ml paper report                    # All sportsbooks
-        nba ml paper report -s underdog        # Underdog only
-        nba ml paper report -s bovada --days 7 # Bovada, last 7 days
+        nba ml paper report                         # All predictions
+        nba ml paper report -s underdog             # Underdog only
+        nba ml paper report -c 0.65                 # High confidence only (65%+)
+        nba ml paper report -s underdog -c 0.60    # Underdog, 60%+ confidence
     """
     from src.ml_pipeline.paper_trading import PaperTrader
 
     trader = PaperTrader(ctx.obj['db'])
-    trader.report(days=days, stat_type=stat, sportsbook=sportsbook, verbose=True)
+    trader.report(days=days, stat_type=stat, sportsbook=sportsbook,
+                  min_confidence=min_confidence, verbose=True)
 
 
 @paper.command('status')

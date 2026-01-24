@@ -84,6 +84,18 @@ pub async fn get_player_shooting_zones(
     Ok(Json(zones))
 }
 
+// GET /api/players/:player_id/shooting-zones/vs/:opponent_id - Get shooting zone matchup with league context
+pub async fn get_player_shooting_zone_matchup(
+    State(pool): State<SqlitePool>,
+    Path((player_id, opponent_id)): Path<(i64, i64)>,
+) -> Result<Json<crate::models::ShootingZoneMatchupResponse>, StatusCode> {
+    let matchup = db::get_shooting_zone_matchup(&pool, player_id, opponent_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(matchup))
+}
+
 // GET /api/players/:id/assist-zones - Get player's assist zones
 pub async fn get_player_assist_zones(
     State(pool): State<SqlitePool>,

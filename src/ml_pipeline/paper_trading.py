@@ -300,7 +300,7 @@ class PaperTrader:
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             logged_at,
-                            game_date,
+                            row.get('game_date', game_date),  # Use actual game date from props
                             row.get('player_name', ''),
                             stat_type,
                             row.get('line', 0),
@@ -579,6 +579,7 @@ class PaperTrader:
         days: Optional[int] = None,
         stat_type: Optional[str] = None,
         sportsbook: Optional[str] = None,
+        min_confidence: Optional[float] = None,
         verbose: bool = True,
     ) -> Dict:
         """
@@ -590,6 +591,8 @@ class PaperTrader:
             days: Only include last N days (None = all)
             stat_type: Filter by stat type (None = all)
             sportsbook: Filter by sportsbook (e.g., 'underdog', 'bovada')
+            min_confidence: Minimum confidence threshold (e.g., 0.60 for 60%+)
+                           Filters to predictions where prob >= threshold OR prob <= (1-threshold)
             verbose: Print report
 
         Returns:
@@ -608,6 +611,12 @@ class PaperTrader:
         if sportsbook:
             where_clauses.append("sportsbook = ?")
             params.append(sportsbook)
+
+        if min_confidence:
+            # High confidence = prob >= threshold (predict over) OR prob <= (1-threshold) (predict under)
+            where_clauses.append("(classifier_prob >= ? OR classifier_prob <= ?)")
+            params.append(min_confidence)
+            params.append(1 - min_confidence)
 
         if days:
             cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -713,7 +722,7 @@ class PaperTrader:
         }
 
         if verbose:
-            self._print_report(results, days, stat_type, sportsbook)
+            self._print_report(results, days, stat_type, sportsbook, min_confidence)
 
         return results
 
@@ -723,11 +732,15 @@ class PaperTrader:
         days: Optional[int],
         stat_type: Optional[str],
         sportsbook: Optional[str] = None,
+        min_confidence: Optional[float] = None,
     ):
         """Log paper trading report."""
-        filter_info = ""
+        filter_parts = []
         if sportsbook:
-            filter_info = f" [{sportsbook}]"
+            filter_parts.append(sportsbook)
+        if min_confidence:
+            filter_parts.append(f"{int(min_confidence*100)}%+ conf")
+        filter_info = f" [{', '.join(filter_parts)}]" if filter_parts else ""
         logger.info(
             "PAPER TRADING REPORT%s: %d predictions (%s to %s), Clf Acc=%.1f%%, ROI=%+.1f%%",
             filter_info,
