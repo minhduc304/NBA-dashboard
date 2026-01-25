@@ -68,15 +68,17 @@ def calculate_vig_and_fair_probs(
 class FeatureEngineer:
     """Transform raw data into ML features."""
 
-    def __init__(self, stat_type: str):
+    def __init__(self, stat_type: str, db_path: str = DEFAULT_DB_PATH):
         """
         Initialize feature engineer for a specific stat type.
 
         Args:
             stat_type: Type of prop (points, rebounds, etc.)
+            db_path: Path to the SQLite database
         """
         self.stat_type = stat_type
         self.stat_col = STAT_COLUMNS.get(stat_type, 'pts')
+        self.db_path = db_path
 
     def engineer_features(
         self,
@@ -84,6 +86,7 @@ class FeatureEngineer:
         matchup_stats: Optional[pd.DataFrame] = None,
         consistency_stats: Optional[pd.DataFrame] = None,
         opp_defense: Optional[pd.DataFrame] = None,
+        include_minutes_projection: bool = True,
     ) -> pd.DataFrame:
         """
         Add all derived features to the dataframe.
@@ -93,6 +96,7 @@ class FeatureEngineer:
             matchup_stats: Player vs opponent historical stats (optional)
             consistency_stats: Player consistency metrics (optional)
             opp_defense: Opponent defensive stats (optional)
+            include_minutes_projection: Whether to add minutes projection features
 
         Returns:
             DataFrame with additional engineered features
@@ -125,6 +129,10 @@ class FeatureEngineer:
 
         # NEW: Opponent defense features
         df = self._add_opponent_defense_features(df, opp_defense)
+
+        # NEW: Minutes projection features
+        if include_minutes_projection:
+            df = self._add_minutes_features(df)
 
         # Fill missing values
         df = self._handle_missing(df)
@@ -585,6 +593,26 @@ class FeatureEngineer:
 
         return df
 
+    def _add_minutes_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add minutes trend slope and injury context features from pre-computed rolling stats.
+
+        """
+        # Use pre-computed trend slope from rolling stats if available
+        if 'minutes_trend_slope' not in df.columns:
+            df['minutes_trend_slope'] = 0.0
+
+        # Injury context features
+        if 'games_since_injury_return' not in df.columns:
+            df['games_since_injury_return'] = 0  # 0 = not in return window
+        else:
+            df['games_since_injury_return'] = df['games_since_injury_return'].fillna(0).astype(int)
+
+        if 'is_currently_dtd' not in df.columns:
+            df['is_currently_dtd'] = 0
+
+        return df
+
     def _handle_missing(self, df: pd.DataFrame) -> pd.DataFrame:
         """Handle missing values appropriately."""
         # Fill numeric columns with 0
@@ -722,11 +750,24 @@ class FeatureEngineer:
             'line_vs_adjusted',     # Line minus adjusted projection
         ]
 
+    def get_minutes_features(self) -> List[str]:
+        """
+        Return minutes and injury context features for the classifier.
+
+        Returns:
+            List of minutes and injury-related feature column names
+        """
+        return [
+            'minutes_trend_slope',
+            'games_since_injury_return',
+            'is_currently_dtd',
+        ]
+
     def get_classifier_features(self) -> List[str]:
         """
-        Return all features for classifier (includes line + opponent + sportsbook + odds features).
+        Return all features for classifier (includes line + opponent + sportsbook + odds + minutes features).
         The classifier needs line-relative features to predict over/under.
-        Includes opponent stats, sportsbook indicators, and odds-based features.
+        Includes opponent stats, sportsbook indicators, odds-based features, and minutes projections.
 
         Returns:
             List of column names for classifier
@@ -742,7 +783,7 @@ class FeatureEngineer:
             'book_fanduel',
             'book_draftkings',
             'book_other',
-        ] + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features()
+        ] + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features() + self.get_minutes_features()
 
     def get_available_features(self, df: pd.DataFrame) -> List[str]:
         """

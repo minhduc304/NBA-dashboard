@@ -587,6 +587,14 @@ def init_database(db_path: str = None) -> None:
             -- Standard deviation (L10)
             l10_pts_std REAL, l10_reb_std REAL, l10_ast_std REAL,
 
+            -- Minutes projection features
+            minutes_trend_slope REAL,    -- Linear regression slope on L10 minutes
+            minutes_baseline REAL,       -- Weighted average baseline minutes
+
+            -- Injury context features
+            games_since_injury_return INTEGER,  -- Games since returning from 'Out' (0-10, null if healthy)
+            is_currently_dtd INTEGER DEFAULT 0,  -- 1 if listed as Day-To-Day
+
             -- Games in each window (for validation)
             games_in_l5 INTEGER, games_in_l10 INTEGER, games_in_l20 INTEGER,
 
@@ -599,6 +607,62 @@ def init_database(db_path: str = None) -> None:
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_rolling_player_date ON player_rolling_stats(player_id, game_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_rolling_season ON player_rolling_stats(season)')
+
+    # =========================================================================
+    # PLAYER MINUTES CONTEXT TABLE (role classification for minutes projection)
+    # =========================================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS player_minutes_context (
+            player_id TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            season TEXT NOT NULL,
+
+            -- Role classification
+            role_type TEXT,              -- 'star', 'starter', 'rotation', 'bench', 'end_bench'
+            position_group TEXT,         -- 'guard', 'wing', 'big'
+
+            -- Minutes metrics
+            baseline_minutes REAL,       -- Weighted average baseline
+            ceiling_minutes REAL,        -- Max minutes (season high)
+            floor_minutes REAL,          -- Min non-zero minutes
+            minutes_std REAL,            -- Standard deviation
+            dnp_rate REAL,               -- Rate of DNP games
+
+            -- Metadata
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (player_id, team_id, season)
+        )
+    ''')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_minutes_context_player ON player_minutes_context(player_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_minutes_context_team ON player_minutes_context(team_id, season)')
+
+    # =========================================================================
+    # TEAMMATE INJURY IMPACT TABLE (how injuries affect teammate minutes)
+    # =========================================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS teammate_injury_impact (
+            player_id TEXT NOT NULL,
+            injured_teammate_id TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            season TEXT NOT NULL,
+
+            -- Impact metrics
+            minutes_impact REAL,         -- Expected minutes change (% difference)
+            sample_games INTEGER,        -- Number of games in sample
+            confidence_score REAL,       -- Confidence in the estimate (0-1)
+
+            -- Metadata
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (player_id, injured_teammate_id, season)
+        )
+    ''')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_injury_impact_player ON teammate_injury_impact(player_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_injury_impact_teammate ON teammate_injury_impact(injured_teammate_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_injury_impact_team ON teammate_injury_impact(team_id, season)')
 
     conn.commit()
     conn.close()

@@ -37,7 +37,7 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
     # Note: ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING excludes current row
     cursor.execute('''
         SELECT
-            player_id, game_id, game_date, season,
+            player_id, game_id, game_date, season, player_name,
             pts, reb, ast, min, stl, blk, tov, fg3m,
             pts + reb + ast as pra,
 
@@ -98,7 +98,7 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
         games.sort(key=lambda x: x[2])  # game_date is at index 2
 
         for i, row in enumerate(games):
-            (player_id, game_id, game_date, season,
+            (player_id, game_id, game_date, season, player_name,
              pts, reb, ast, min_played, stl, blk, tov, fg3m, pra,
              l5_pts, l5_reb, l5_ast, l5_min, l5_stl, l5_blk, l5_tov, l5_fg3m, l5_pra, games_in_l5,
              l10_pts, l10_reb, l10_ast, l10_min, l10_stl, l10_blk, l10_tov, l10_fg3m, l10_pra, games_in_l10,
@@ -123,15 +123,20 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
             l10_reb_std = None
             l10_ast_std = None
 
+            # Minutes trend and baseline
+            minutes_trend_slope = None
+            minutes_baseline = None
+
             if i >= 1:  # Need at least 1 previous game
                 # Get previous 10 games (or fewer if not enough history)
                 start_idx = max(0, i - 10)
                 prev_games = games[start_idx:i]
 
                 if len(prev_games) >= 2:  # Need at least 2 for stddev
-                    pts_values = [g[4] for g in prev_games if g[4] is not None]  # pts is index 4
-                    reb_values = [g[5] for g in prev_games if g[5] is not None]  # reb is index 5
-                    ast_values = [g[6] for g in prev_games if g[6] is not None]  # ast is index 6
+                    pts_values = [g[5] for g in prev_games if g[5] is not None]  # pts is index 5
+                    reb_values = [g[6] for g in prev_games if g[6] is not None]  # reb is index 6
+                    ast_values = [g[7] for g in prev_games if g[7] is not None]  # ast is index 7
+                    min_values = [g[8] for g in prev_games if g[8] is not None]  # min is index 8
 
                     if len(pts_values) >= 2:
                         l10_pts_std = _stddev(pts_values)
@@ -139,6 +144,25 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
                         l10_reb_std = _stddev(reb_values)
                     if len(ast_values) >= 2:
                         l10_ast_std = _stddev(ast_values)
+
+                    # Calculate minutes trend slope
+                    if len(min_values) >= 3:
+                        minutes_trend_slope = _linear_regression_slope(min_values)
+
+            # Calculate minutes baseline using weighted average
+            # Get season average minutes
+            season_start_idx = 0
+            for j in range(i):
+                if games[j][3] == season:  # season is at index 3
+                    season_start_idx = j
+                    break
+            season_games_mins = [g[8] for g in games[season_start_idx:i] if g[8] is not None]
+            season_avg_min = sum(season_games_mins) / len(season_games_mins) if season_games_mins else None
+
+            minutes_baseline = _calculate_minutes_baseline(l10_min, l20_min, season_avg_min)
+
+            # Get injury context for this player on this game date
+            injury_context = _get_injury_context(cursor, player_id, player_name, game_date)
 
             inserts.append((
                 player_id, game_id, game_date, season,
@@ -148,6 +172,9 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
                 l10_pts_per36, l10_reb_per36, l10_ast_per36,
                 pts_trend, reb_trend, ast_trend,
                 l10_pts_std, l10_reb_std, l10_ast_std,
+                minutes_trend_slope, minutes_baseline,
+                injury_context['games_since_injury_return'],
+                injury_context['is_currently_dtd'],
                 games_in_l5, games_in_l10, games_in_l20
             ))
 
@@ -161,8 +188,10 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
             l10_pts_per36, l10_reb_per36, l10_ast_per36,
             pts_trend, reb_trend, ast_trend,
             l10_pts_std, l10_reb_std, l10_ast_std,
+            minutes_trend_slope, minutes_baseline,
+            games_since_injury_return, is_currently_dtd,
             games_in_l5, games_in_l10, games_in_l20
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', inserts)
 
     conn.commit()
@@ -245,7 +274,11 @@ def get_rolling_stats_summary(db_path: str = None) -> Dict:
             SUM(CASE WHEN l5_pts IS NOT NULL THEN 1 ELSE 0 END) as has_l5,
             SUM(CASE WHEN l10_pts IS NOT NULL THEN 1 ELSE 0 END) as has_l10,
             SUM(CASE WHEN l20_pts IS NOT NULL THEN 1 ELSE 0 END) as has_l20,
-            SUM(CASE WHEN l10_pts_std IS NOT NULL THEN 1 ELSE 0 END) as has_std
+            SUM(CASE WHEN l10_pts_std IS NOT NULL THEN 1 ELSE 0 END) as has_std,
+            SUM(CASE WHEN minutes_trend_slope IS NOT NULL THEN 1 ELSE 0 END) as has_min_trend,
+            SUM(CASE WHEN minutes_baseline IS NOT NULL THEN 1 ELSE 0 END) as has_min_baseline,
+            SUM(CASE WHEN games_since_injury_return IS NOT NULL THEN 1 ELSE 0 END) as has_injury_return,
+            SUM(CASE WHEN is_currently_dtd = 1 THEN 1 ELSE 0 END) as is_dtd
         FROM player_rolling_stats
     ''')
     result = cursor.fetchone()
@@ -254,7 +287,11 @@ def get_rolling_stats_summary(db_path: str = None) -> Dict:
         'l5': result[1],
         'l10': result[2],
         'l20': result[3],
-        'std': result[4]
+        'std': result[4],
+        'minutes_trend': result[5],
+        'minutes_baseline': result[6],
+        'injury_return': result[7],
+        'is_dtd': result[8]
     }
 
     conn.close()
@@ -305,6 +342,160 @@ def _stddev(values: List[float]) -> Optional[float]:
     mean = sum(values) / len(values)
     variance = sum((x - mean) ** 2 for x in values) / (len(values) - 1)  # Sample variance
     return math.sqrt(variance)
+
+
+def _linear_regression_slope(values: List[float]) -> Optional[float]:
+    """
+    Calculate linear regression slope for trend detection.
+
+    Args:
+        values: List of values in chronological order
+
+    Returns:
+        Slope (change per game) or None if insufficient data
+    """
+    n = len(values)
+    if n < 3:
+        return None
+
+    # Simple linear regression
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(values) / n
+
+    numerator = 0.0
+    denominator = 0.0
+
+    for i, y in enumerate(values):
+        x_diff = i - x_mean
+        numerator += x_diff * (y - y_mean)
+        denominator += x_diff ** 2
+
+    if denominator == 0:
+        return 0.0
+
+    return numerator / denominator
+
+
+def _calculate_minutes_baseline(l10_min: float, l20_min: float, season_min: float) -> Optional[float]:
+    """
+    Calculate weighted baseline minutes.
+
+    Weights: 50% L10 + 30% L20 + 20% season avg
+
+    Args:
+        l10_min: Last 10 games average
+        l20_min: Last 20 games average
+        season_min: Season average
+
+    Returns:
+        Weighted baseline minutes
+    """
+    if l10_min is None:
+        return None
+
+    # Use available data with appropriate fallbacks
+    if l20_min is None:
+        l20_min = l10_min
+    if season_min is None:
+        season_min = l20_min
+
+    return (0.50 * l10_min) + (0.30 * l20_min) + (0.20 * season_min)
+
+
+def _get_injury_context(
+    cursor,
+    player_id: str,
+    player_name: str,
+    game_date: str
+) -> Dict:
+    """
+    Get injury context for a player on a specific game date.
+
+    Note: The player_injuries table uses different player IDs than player_game_logs,
+    so we join on player_name instead of player_id. The player_id is still used
+    for game_logs queries.
+
+    Returns:
+        - games_since_injury_return: Games since returning from 'Out' (None if not in window)
+        - is_injury_return_window: 1 if within 10 games of return
+        - is_currently_questionable: 1 if listed as Questionable
+        - is_currently_dtd: 1 if listed as Day-To-Day
+    """
+    default_result = {
+        'games_since_injury_return': None,
+        'is_currently_dtd': 0,
+    }
+
+    if not player_name:
+        return default_result
+
+    # Normalize game_date to just date portion (remove T00:00:00 if present)
+    game_date_normalized = game_date[:10] if game_date else game_date
+
+    # 1. Find most recent 'Out' status before game_date (join by player_name)
+    cursor.execute('''
+        SELECT MAX(collection_date) as last_out_date
+        FROM player_injuries
+        WHERE player_name = ?
+        AND collection_date < ?
+        AND injury_status = 'Out'
+    ''', (player_name, game_date_normalized))
+
+    result = cursor.fetchone()
+    last_out = result[0] if result else None
+
+    games_since_return = None
+
+    if last_out:
+        # 2. Find first game after injury cleared (use player_id for game_logs)
+        cursor.execute('''
+            SELECT game_date
+            FROM player_game_logs
+            WHERE player_id = ?
+            AND DATE(game_date) > DATE(?)
+            AND min > 0
+            ORDER BY game_date ASC
+            LIMIT 1
+        ''', (player_id, last_out))
+
+        first_game_back = cursor.fetchone()
+
+        if first_game_back:
+            # 3. Count games between return and current game
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM player_game_logs
+                WHERE player_id = ?
+                AND DATE(game_date) >= DATE(?)
+                AND DATE(game_date) <= DATE(?)
+                AND min > 0
+            ''', (player_id, first_game_back[0], game_date))
+
+            games_since = cursor.fetchone()[0]
+
+            if games_since <= 10:
+                games_since_return = games_since
+
+    # 4. Check current injury status (join by player_name)
+    cursor.execute('''
+        SELECT injury_status
+        FROM player_injuries
+        WHERE player_name = ?
+        AND collection_date <= ?
+        ORDER BY collection_date DESC
+        LIMIT 1
+    ''', (player_name, game_date_normalized))
+
+    current_status = cursor.fetchone()
+
+    is_dtd = 0
+    if current_status:
+        is_dtd = 1 if current_status[0] == 'Day-To-Day' else 0
+
+    return {
+        'games_since_injury_return': games_since_return,
+        'is_currently_dtd': is_dtd,
+    }
 
 
 def main():

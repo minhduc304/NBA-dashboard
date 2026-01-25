@@ -67,6 +67,11 @@ class PropDataLoader:
             -- Minutes context
             prs.l10_min,
             prs.l5_min,
+            prs.minutes_trend_slope,
+
+            -- Injury context
+            prs.games_since_injury_return,
+            prs.is_currently_dtd,
 
             -- Sample size indicators
             prs.games_in_l5,
@@ -92,15 +97,15 @@ class PropDataLoader:
 
         FROM prop_outcomes po
 
-        -- Join rolling stats
+        -- Join rolling stats (use DATE() to handle format differences)
         JOIN player_rolling_stats prs
             ON po.player_id = prs.player_id
-            AND po.game_date = prs.game_date
+            AND DATE(po.game_date) = DATE(prs.game_date)
 
         -- Join game logs for context
         JOIN player_game_logs pgl
             ON po.player_id = pgl.player_id
-            AND po.game_date = pgl.game_date
+            AND DATE(po.game_date) = DATE(pgl.game_date)
 
         -- Join opponent team for pace lookup
         LEFT JOIN teams opp_team
@@ -245,6 +250,9 @@ class PropDataLoader:
             prs.{stat_col}_trend as stat_trend,
             prs.l10_min,
             prs.l5_min,
+            prs.minutes_trend_slope,
+            prs.games_since_injury_return,
+            prs.is_currently_dtd,
             prs.games_in_l5,
             prs.games_in_l10,
             prs.games_in_l20
@@ -349,7 +357,12 @@ class PropDataLoader:
             -- Minutes context
             prs.l10_min,
             prs.l5_min,
+            prs.minutes_trend_slope,
             pgl.min as actual_min,
+
+            -- Injury context
+            prs.games_since_injury_return,
+            prs.is_currently_dtd,
 
             -- Sample size indicators
             prs.games_in_l5,
@@ -365,10 +378,10 @@ class PropDataLoader:
 
         FROM player_game_logs pgl
 
-        -- Join rolling stats (these are pre-game averages)
+        -- Join rolling stats (these are pre-game averages, use DATE() for format consistency)
         JOIN player_rolling_stats prs
             ON pgl.player_id = prs.player_id
-            AND pgl.game_date = prs.game_date
+            AND DATE(pgl.game_date) = DATE(prs.game_date)
 
         WHERE pgl.min >= ?
         AND prs.l10_{stat_col} IS NOT NULL
