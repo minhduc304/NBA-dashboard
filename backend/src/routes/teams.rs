@@ -5,7 +5,7 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePool;
-use crate::models::Team;
+use crate::models::{Team, TeamStats};
 use crate::db;
 
 // Query parameters for searching teams
@@ -52,4 +52,17 @@ pub async fn search_team(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(team))
+}
+
+// GET /api/teams/:id/stats - Get team pace and ratings
+pub async fn get_team_stats(
+    State(pool): State<SqlitePool>,
+    Path(team_id): Path<i64>,
+) -> Result<Json<TeamStats>, StatusCode> {
+    let stats = db::get_team_stats(&pool, team_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(stats))
 }

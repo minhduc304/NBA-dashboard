@@ -28,6 +28,18 @@ pub async fn get_team_by_abbreviation(pool: &SqlitePool, abbreviation: &str) -> 
     .await
 }
 
+/// Get team pace and ratings from team_pace table
+pub async fn get_team_stats(pool: &SqlitePool, team_id: i64) -> Result<Option<crate::models::TeamStats>, sqlx::Error> {
+    sqlx::query_as::<_, crate::models::TeamStats>(
+        r#"SELECT team_id, season, pace, off_rating, def_rating, net_rating, games_played, wins, losses
+           FROM team_pace
+           WHERE team_id = ? AND season = '2025-26'"#
+    )
+    .bind(team_id)
+    .fetch_optional(pool)
+    .await
+}
+
 // Player queries
 pub async fn get_all_players(pool: &SqlitePool) -> Result<Vec<PlayerStats>, sqlx::Error> {
     sqlx::query_as::<_, PlayerStats>(

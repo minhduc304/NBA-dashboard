@@ -400,3 +400,49 @@ pub struct PlayTypeMatchupResponse {
     pub matchups: Vec<PlayTypeMatchup>,
 }
 
+/// Team pace and rating stats
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStats {
+    pub team_id: i64,
+    pub season: String,
+    pub pace: Option<f32>,
+    pub off_rating: Option<f32>,
+    pub def_rating: Option<f32>,
+    pub net_rating: Option<f32>,
+    pub games_played: Option<i64>,
+    pub wins: Option<i64>,
+    pub losses: Option<i64>,
+}
+
+/// Upcoming matchup defensive context response
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpcomingMatchupResponse {
+    pub opponent_name: String,
+    pub stat_type: String,
+    // Team stats
+    pub def_rtg: Option<f32>,
+    pub pace: Option<f32>,
+    // Points-specific (dominant shooting zone ranks)
+    pub dsz_rank: Option<i32>,
+    pub dsz_name: Option<String>,
+    pub dsz2_rank: Option<i32>,
+    pub dsz2_name: Option<String>,
+    // Points-specific (dominant play type ranks)
+    pub dpt_rank: Option<i32>,
+    pub dpt_name: Option<String>,
+    pub dpt2_rank: Option<i32>,
+    pub dpt2_name: Option<String>,
+    // Assists-specific (dominant assist zone ranks)
+    pub daz_rank: Option<i32>,
+    pub daz_name: Option<String>,
+    pub daz2_rank: Option<i32>,
+    pub daz2_name: Option<String>,
+    pub assists_allowed: Option<f32>,
+    // Rebounds-specific
+    pub rebounds_allowed: Option<f32>,
+    pub oreb_allowed: Option<f32>,
+    pub dreb_allowed: Option<f32>,
+}
+

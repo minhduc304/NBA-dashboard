@@ -70,11 +70,13 @@ async fn main() {
         .route("/api/players/{id}/play-type-matchup", get(routes::players::get_player_play_type_matchup))
         .route("/api/players/{id}/assist-zone-matchup", get(routes::players::get_player_assist_zone_matchup))
         .route("/api/players/{player_id}/shooting-zones/vs/{opponent_id}", get(routes::players::get_player_shooting_zone_matchup))
+        .route("/api/players/{id}/upcoming-matchup", get(routes::players::get_upcoming_matchup_context))
 
         // Team endpoints
         .route("/api/teams", get(routes::teams::get_teams))
         .route("/api/teams/search", get(routes::teams::search_team))
         .route("/api/teams/{id}", get(routes::teams::get_team_by_id))
+        .route("/api/teams/{id}/stats", get(routes::teams::get_team_stats))
         .route("/api/teams/{id}/defensive-zones", get(routes::zones::get_team_defensive_zones))
         .route("/api/teams/{id}/defensive-play-types", get(routes::play_types::get_team_defensive_play_types))
 
