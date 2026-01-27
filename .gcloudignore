@@ -1,0 +1,75 @@
+# Cloud Build ignore file
+# Files and directories to exclude when building the container
+
+# Git
+.git/
+.gitignore
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local data (database is downloaded from GCS)
+data/
+*.db
+*.db-journal
+
+# Local logs
+logs/
+
+# Documentation
+docs/
+*.md
+!requirements.txt
+./claude
+
+# Frontend (not needed for ML pipeline)
+frontend/
+
+# Backend API (not needed for ML pipeline)
+backend/
+
+# Test files
+tests/
+test_*.py
+*_test.py
+conftest.py
+
+# Configuration files
+.env
+.envrc
+underdog_config.json
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Local scripts not needed in container
+scripts/run_with_env.sh
+scripts/sync_db_from_cloud.sh
+
+# Backup files
+*.bak
+*.backup
+data/backups/
+
+
+# macOS
+.DS_Store

@@ -80,6 +80,11 @@ nba_stats_dashboard/
 ├── logs/                       # Application logs
 ├── tests/                      # Test suite
 ├── scripts/                    # Automation scripts
+│   ├── cloud_run_entrypoint.sh # Cloud Run daily pipeline entrypoint
+│   ├── cloud_run_scrape.sh     # Cloud Run props scraping entrypoint
+│   └── sync_db_from_cloud.sh   # Local script to sync DB from GCS
+├── Dockerfile                  # Container image for Cloud Run
+├── .gcloudignore               # Files excluded from Cloud Build
 └── nba                         # CLI executable
 ```
 
@@ -144,7 +149,7 @@ The project uses a unified CLI interface via `./nba`:
 ## Quick Start
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.12+
 - Node.js 18+
 - Rust (for backend API)
 
@@ -207,14 +212,84 @@ cd frontend && npm run dev
 
 Visit `http://localhost:3000` to access the dashboard.
 
-## Automation
+## GCP Cloud Run Deployment (Would probably cost ~$1-2/month.)
 
-The system runs automatically via launchd/cron:
+### Prerequisites
 
-| Schedule | Task | Description |
-|----------|------|-------------|
-| 9 AM daily | `./nba ml pipeline` | Game logs, injuries, features, prop outcomes, predictions |
-| 10 AM, 2 PM, 6 PM, 10 PM | `./nba scrape all` | Props from Underdog + PrizePicks |
+```bash
+# Install Google Cloud SDK
+brew install google-cloud-sdk
+gcloud auth login
+gcloud config set project nba-stats-pipeline
+```
+
+### Initial Setup
+
+```bash
+# 1. Enable APIs
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  cloudscheduler.googleapis.com secretmanager.googleapis.com storage.googleapis.com
+
+# 2. Create storage bucket
+gcloud storage buckets create gs://nba-stats-pipeline-data --location=us-west1
+
+# 3. Upload database
+gcloud storage cp data/nba_stats.db gs://nba-stats-pipeline-data/
+
+# 4. Store secrets (see Environment Variables section)
+
+# 5. Build container
+gcloud builds submit --tag gcr.io/nba-stats-pipeline/daily-pipeline
+
+# 6. Create Cloud Run Jobs
+gcloud run jobs create nba-daily-pipeline \
+  --image gcr.io/nba-stats-pipeline/daily-pipeline \
+  --region us-west1 --memory 2Gi --cpu 1 --task-timeout 30m --max-retries 1 \
+  --set-secrets "UNDERDOG_EMAIL=UNDERDOG_EMAIL:latest,UNDERDOG_PASSWORD=UNDERDOG_PASSWORD:latest,ODDS_API_KEY=ODDS_API_KEY:latest" \
+  --set-env-vars "DB_PATH=/app/data/nba_stats.db,GCS_BUCKET=nba-stats-pipeline-data"
+
+gcloud run jobs create nba-scrape-props \
+  --image gcr.io/nba-stats-pipeline/daily-pipeline \
+  --region us-west1 --memory 1Gi --cpu 1 --task-timeout 10m --max-retries 2 \
+  --set-secrets "UNDERDOG_EMAIL=UNDERDOG_EMAIL:latest,UNDERDOG_PASSWORD=UNDERDOG_PASSWORD:latest" \
+  --set-env-vars "DB_PATH=/app/data/nba_stats.db,GCS_BUCKET=nba-stats-pipeline-data" \
+  --command "/scrape.sh"
+```
+
+
+## Automation (GCP Cloud Run)
+
+The system runs automatically on GCP Cloud Run Jobs:
+
+### Cloud Run Jobs
+
+| Job | Purpose | Schedule |
+|-----|---------|----------|
+| `nba-daily-pipeline` | Full ML pipeline (logs, injuries, features, odds_api, paper trading) | Weekdays 4 PM MST, Weekends 12 PM MST |
+| `nba-scrape-props` | Underdog + PrizePicks scraping (no Odds API credits used) | Every 4 hours |
+
+### Local Sync
+
+| Task | Schedule | Description |
+|------|----------|-------------|
+| `sync_db_from_cloud.sh` | Every 3 hours (launchd) | Syncs database from GCS to local Mac |
+
+
+### Manual Operations
+
+```bash
+# Manually trigger pipeline
+gcloud run jobs execute nba-daily-pipeline --region us-west1 --wait
+
+# Manually trigger scraping
+gcloud run jobs execute nba-scrape-props --region us-west1 --wait
+
+# Sync database from cloud to local
+./scripts/sync_db_from_cloud.sh
+
+# Check job logs
+gcloud run jobs executions logs <EXECUTION_NAME> --region us-west1
+```
 
 ## Model Training
 
@@ -274,18 +349,34 @@ Key tables:
 
 ## Environment Variables
 
-Create a `.env` file:
+Create a `.env` file for local development:
 
 ```bash
 # Underdog credentials (for scraping)
 UNDERDOG_EMAIL=your_email
 UNDERDOG_PASSWORD=your_password
 
-# The Odds API key
-ODDS_API_KEY=your_api_key
+# The Odds API key (supports multiple comma-separated keys for auto-rotation)
+ODDS_API_KEY=key1,key2,key3
 
 # Database path (optional, defaults to data/nba_stats.db)
 DATABASE_URL=sqlite:///data/nba_stats.db
+```
+
+### GCP Secret Manager
+
+For Cloud Run, secrets are stored in GCP Secret Manager:
+
+```bash
+# Store secrets
+gcloud secrets create UNDERDOG_EMAIL --replication-policy="automatic"
+echo -n "your-email" | gcloud secrets versions add UNDERDOG_EMAIL --data-file=-
+
+gcloud secrets create UNDERDOG_PASSWORD --replication-policy="automatic"
+echo -n "your-password" | gcloud secrets versions add UNDERDOG_PASSWORD --data-file=-
+
+gcloud secrets create ODDS_API_KEY --replication-policy="automatic"
+echo -n "key1,key2,key3" | gcloud secrets versions add ODDS_API_KEY --data-file=-
 ```
 
 ## Testing
@@ -301,10 +392,14 @@ python -m pytest tests/test_collectors/test_player.py -v
 ## Logs
 
 Logs are stored in `logs/`:
-- `daily_pipeline.log` - Daily ML pipeline execution
-- `scrape_props.log` - Props scraping
-- `paper_trading.log` - Paper trading operations
-- `launchd.log` - Scheduled job output
+- `sync.log` - Local database sync from GCS
+- `daily_pipeline.log` - Daily ML pipeline execution (legacy)
+- `scrape_props.log` - Props scraping (legacy)
+
+Cloud Run logs are available via:
+```bash
+gcloud run jobs executions logs <EXECUTION_NAME> --region us-west1
+```
 
 ## License
 
