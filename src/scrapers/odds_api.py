@@ -50,47 +50,86 @@ class OddsAPI:
         Initialize API client.
 
         Args:
-            api_key: API key (defaults to ODDS_API_KEY env var)
+            api_key: API key or comma-separated list of keys (defaults to ODDS_API_KEY env var)
+                     Multiple keys will be rotated automatically when quota is exhausted.
         """
-        self.api_key = api_key or os.getenv('ODDS_API_KEY')
-        if not self.api_key:
+        keys_str = api_key or os.getenv('ODDS_API_KEY')
+        if not keys_str:
             raise ValueError("ODDS_API_KEY not found in environment")
+
+        # Support multiple comma-separated keys
+        self._api_keys = [k.strip() for k in keys_str.split(',') if k.strip()]
+        self._current_key_index = 0
+        self.api_key = self._api_keys[0]
 
         self.session = requests.Session()
         self._requests_remaining = None
         self._requests_used = None
 
+    def _rotate_key(self) -> bool:
+        """
+        Rotate to the next API key.
+
+        Returns:
+            True if successfully rotated, False if no more keys available.
+        """
+        if self._current_key_index < len(self._api_keys) - 1:
+            self._current_key_index += 1
+            self.api_key = self._api_keys[self._current_key_index]
+            logger.info(
+                "Rotated to API key %d of %d",
+                self._current_key_index + 1,
+                len(self._api_keys)
+            )
+            return True
+        return False
+
+    @property
+    def keys_remaining(self) -> int:
+        """Return number of unused API keys."""
+        return len(self._api_keys) - self._current_key_index - 1
+
     def _request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
-        """Make API request and track quota."""
+        """Make API request and track quota. Auto-rotates keys on quota exhaustion."""
         url = f"{self.BASE_URL}/{endpoint}"
 
-        request_params = {'apiKey': self.api_key}
-        if params:
-            request_params.update(params)
+        while True:
+            request_params = {'apiKey': self.api_key}
+            if params:
+                request_params.update(params)
 
-        response = self.session.get(url, params=request_params, timeout=self.DEFAULT_TIMEOUT)
+            response = self.session.get(url, params=request_params, timeout=self.DEFAULT_TIMEOUT)
 
-        # Track API quota from headers
-        self._requests_remaining = response.headers.get('x-requests-remaining')
-        self._requests_used = response.headers.get('x-requests-used')
+            # Track API quota from headers
+            self._requests_remaining = response.headers.get('x-requests-remaining')
+            self._requests_used = response.headers.get('x-requests-used')
 
-        # Check for rate limiting - don't retry, just fail fast
-        if response.status_code == 429:
-            remaining = int(self._requests_remaining) if self._requests_remaining else 0
-            raise RateLimitError(
-                f"API rate limited. Quota remaining: {remaining}",
-                quota_remaining=remaining
-            )
+            # Check for rate limiting or quota exhaustion
+            quota_exhausted = False
+            if response.status_code == 429:
+                quota_exhausted = True
+            elif self._requests_remaining and int(self._requests_remaining) <= 0:
+                quota_exhausted = True
 
-        # Check if quota is exhausted (might return 401 or other error)
-        if self._requests_remaining and int(self._requests_remaining) <= 0:
-            raise RateLimitError(
-                "API quota exhausted for this month",
-                quota_remaining=0
-            )
+            if quota_exhausted:
+                # Try to rotate to next key
+                if self._rotate_key():
+                    logger.warning(
+                        "API key exhausted, rotating to next key (%d/%d)",
+                        self._current_key_index + 1,
+                        len(self._api_keys)
+                    )
+                    continue  # Retry with new key
+                else:
+                    # No more keys available
+                    remaining = int(self._requests_remaining) if self._requests_remaining else 0
+                    raise RateLimitError(
+                        f"All API keys exhausted. Keys used: {len(self._api_keys)}",
+                        quota_remaining=remaining
+                    )
 
-        response.raise_for_status()
-        return response.json()
+            response.raise_for_status()
+            return response.json()
 
     @property
     def quota_remaining(self) -> Optional[int]:
