@@ -55,7 +55,6 @@ conftest.py
 # Configuration files
 .env
 .envrc
-underdog_config.json
 
 # Jupyter notebooks
 *.ipynb

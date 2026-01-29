@@ -1,4 +1,4 @@
-import { fetchPlayers, type ApiPlayer, type ApiGameLog } from './api';
+import { fetchPlayers, type ApiPlayer, type ApiGameLog, type ApiUpcomingMatchupContext } from './api';
 
 // NBA Team data with all 30 teams (primary and secondary colors)
 export const NBA_TEAMS: Record<string, { name: string; short: string; color: string; colorSecondary: string }> = {
@@ -80,6 +80,7 @@ export interface DnpPlayer {
 export interface ChartDataPoint {
   date: string;
   opponent: string;
+  opponentId?: number;
   value: number | null;
   isOver: boolean;
   isFuture?: boolean;
@@ -99,6 +100,8 @@ export interface ChartDataPoint {
   dreb: number | null;
   // DNP players from opponent team
   dnpPlayers: DnpPlayer[];
+  // Upcoming game defensive context
+  upcomingContext?: ApiUpcomingMatchupContext;
 }
 
 // Player stats interface for display

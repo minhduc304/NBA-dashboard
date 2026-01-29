@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { STAT_CATEGORIES, STAT_TO_API_FIELD, getPlayerStats, transformGameLogsToChartData, type Player, type StatCategory, type ChartDataPoint } from '@/lib/data';
-import { fetchPlayerGameLogs, fetchPlayerById, fetchPlayerProps, fetchPlayTypeMatchup, type ApiGameLog, type ApiPlayer, type ApiPropLine, type ApiPlayTypeMatchup } from '@/lib/api';
+import { fetchPlayerGameLogs, fetchPlayerById, fetchPlayerProps, fetchPlayTypeMatchup, fetchUpcomingMatchupContext, type ApiGameLog, type ApiPlayer, type ApiPropLine, type ApiPlayTypeMatchup, type ApiUpcomingMatchupContext } from '@/lib/api';
 import { STAT_CATEGORY_TO_PROP } from '@/lib/constants';
 import { StatsChart, type HitRateInfo } from './StatsChart';
 import { ShootingZonesCard } from './ShootingZonesCard';
@@ -59,6 +59,9 @@ export function MainContent({ player }: MainContentProps) {
   const [isLoadingMatchups, setIsLoadingMatchups] = useState(false);
   const [matchupsError, setMatchupsError] = useState<string | null>(null);
   const [matchupsRetryCount, setMatchupsRetryCount] = useState(0);
+
+  // Upcoming game defensive context state
+  const [upcomingContext, setUpcomingContext] = useState<ApiUpcomingMatchupContext | null>(null);
 
   // Retry handler for play type matchups
   const handleRetryMatchups = useCallback(() => {
@@ -170,6 +173,40 @@ export function MainContent({ player }: MainContentProps) {
     loadMatchups();
   }, [player?.id, opponentId, matchupsRetryCount]);
 
+  // Fetch upcoming matchup defensive context when player, opponent, and stat category are available
+  useEffect(() => {
+    if (!player || !opponentId) {
+      setUpcomingContext(null);
+      return;
+    }
+
+    const playerId = parseInt(player.id, 10);
+    if (isNaN(playerId)) {
+      setUpcomingContext(null);
+      return;
+    }
+
+    // Map stat category to backend stat_type
+    let statType = 'points';
+    if (activeStat === 'Assists' || activeStat === 'Ast+Reb') {
+      statType = 'assists';
+    } else if (activeStat === 'Rebounds') {
+      statType = 'rebounds';
+    }
+
+    const loadUpcomingContext = async () => {
+      try {
+        const context = await fetchUpcomingMatchupContext(playerId, opponentId, statType);
+        setUpcomingContext(context);
+      } catch (err) {
+        console.error('Failed to fetch upcoming matchup context:', err);
+        setUpcomingContext(null);
+      }
+    };
+
+    loadUpcomingContext();
+  }, [player?.id, opponentId, activeStat]);
+
   // Fetch game logs when player or gamesCount changes
   useEffect(() => {
     if (!player) {
@@ -208,11 +245,67 @@ export function MainContent({ player }: MainContentProps) {
     loadGameLogs();
   }, [player?.id, gamesCount, activeStat, logsRetryCount]);
 
+  // Get the current prop line based on selected stat category
+  // (moved here so chartData can use it)
+  const currentProp = useMemo(() => {
+    const propStatName = STAT_CATEGORY_TO_PROP[activeStat];
+    if (!propStatName) return null;
+    return playerProps.find(p => p.statName === propStatName) || null;
+  }, [playerProps, activeStat]);
+
   // Transform game logs to chart data based on selected stat
+  // Also add upcoming game as a future data point if opponent is available
   const chartData: ChartDataPoint[] = useMemo(() => {
     if (gameLogs.length === 0) return [];
-    return transformGameLogsToChartData(gameLogs, activeStat);
-  }, [gameLogs, activeStat]);
+
+    const transformed = transformGameLogsToChartData(gameLogs, activeStat);
+
+    // Add upcoming game as a future data point if we have opponent info
+    if (opponentId && player?.opponentAbbr) {
+      // Calculate the bar height: use prop line if available, otherwise L10 average
+      let futureValue: number | null = null;
+
+      if (currentProp?.line) {
+        futureValue = currentProp.line;
+      } else if (transformed.length > 0) {
+        // Calculate L10 average from the most recent games
+        const recentGames = transformed.slice(-10).filter(d => d.value !== null);
+        if (recentGames.length > 0) {
+          futureValue = recentGames.reduce((sum, d) => sum + (d.value || 0), 0) / recentGames.length;
+        }
+      }
+
+      // Get today's date for display
+      const today = new Date();
+      const futureDate = today.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+
+      const futureGame: ChartDataPoint = {
+        date: futureDate,
+        opponent: player.opponentAbbr,
+        opponentId: opponentId,
+        value: futureValue,
+        isOver: false,
+        isFuture: true,
+        wl: null,
+        gameMargin: null,
+        min: null,
+        fgm: null,
+        fga: null,
+        fg3m: null,
+        fg3a: null,
+        ftm: null,
+        fta: null,
+        oreb: null,
+        dreb: null,
+        dnpPlayers: [],
+        upcomingContext: upcomingContext || undefined,
+      };
+
+      transformed.push(futureGame);
+    }
+
+    return transformed;
+  }, [gameLogs, activeStat, opponentId, player?.opponentAbbr, currentProp?.line, upcomingContext]);
 
   // Extract available seasons from game logs
   const availableSeasons = useMemo(() => {
@@ -275,11 +368,20 @@ export function MainContent({ player }: MainContentProps) {
     });
   }, [gameLogs, filters]);
 
-  // Transform filtered game logs to chart data
+  // Transform filtered game logs to chart data (includes future game from chartData)
   const filteredChartData: ChartDataPoint[] = useMemo(() => {
-    if (filteredGameLogs.length === 0) return [];
-    return transformGameLogsToChartData(filteredGameLogs, activeStat);
-  }, [filteredGameLogs, activeStat]);
+    if (filteredGameLogs.length === 0 && !chartData.some(d => d.isFuture)) return [];
+
+    const transformed = transformGameLogsToChartData(filteredGameLogs, activeStat);
+
+    // Add the future game from chartData if it exists
+    const futureGame = chartData.find(d => d.isFuture);
+    if (futureGame) {
+      transformed.push(futureGame);
+    }
+
+    return transformed;
+  }, [filteredGameLogs, activeStat, chartData]);
 
   // Reset filters when player changes
   useEffect(() => {
@@ -311,13 +413,6 @@ export function MainContent({ player }: MainContentProps) {
     // Return rounded to 1 decimal place
     return typeof value === 'number' ? Math.round(value * 10) / 10 : null;
   }, [playerStats, activeStat]);
-
-  // Get the current prop line based on selected stat category
-  const currentProp = useMemo(() => {
-    const propStatName = STAT_CATEGORY_TO_PROP[activeStat];
-    if (!propStatName) return null;
-    return playerProps.find(p => p.statName === propStatName) || null;
-  }, [playerProps, activeStat]);
 
   // Filter stat categories to only show those with available props
   const availableStatCategories = useMemo(() => {
@@ -490,6 +585,7 @@ export function MainContent({ player }: MainContentProps) {
                 data={filteredChartData}
                 initialLineValue={currentProp?.line ?? seasonAvg ?? 20.5}
                 onLineChange={handleLineChange}
+                statCategory={activeStat}
               />
             )}
 

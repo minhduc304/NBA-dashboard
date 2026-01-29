@@ -11,8 +11,9 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import { NBA_TEAMS, type ChartDataPoint } from '@/lib/data';
+import { NBA_TEAMS, type ChartDataPoint, type StatCategory } from '@/lib/data';
 import { TeamLogo } from '@/components/ui/team-logo';
+import { type ApiUpcomingMatchupContext } from '@/lib/api';
 
 // NBA Team ID mapping for SVG logos
 const TEAM_IDS: Record<string, number> = {
@@ -26,25 +27,123 @@ const TEAM_IDS: Record<string, number> = {
   UTA: 1610612762, WAS: 1610612764,
 };
 
+// Helper to format rank display with color
+function RankBadge({ rank, label }: { rank: number | null | undefined; label: string }) {
+  if (rank == null) return null;
+
+  // Color based on rank: 1-10 = green (good matchup), 11-20 = yellow, 21-30 = red (bad matchup)
+  const colorClass = rank <= 10
+    ? 'text-green-400'
+    : rank <= 20
+    ? 'text-amber-400'
+    : 'text-red-400';
+
+  return (
+    <div className="flex justify-between text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={`font-mono font-semibold ${colorClass}`}>#{rank}</span>
+    </div>
+  );
+}
+
+// Helper to format stat display
+function StatDisplay({ value, label, decimals = 1 }: { value: number | null | undefined; label: string; decimals?: number }) {
+  if (value == null) return null;
+
+  return (
+    <div className="flex justify-between text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono font-semibold">{value.toFixed(decimals)}</span>
+    </div>
+  );
+}
+
+// Stat-specific tooltip content for upcoming games
+interface FutureGameTooltipProps {
+  data: ChartDataPoint;
+  statCategory: StatCategory;
+}
+
+function FutureGameTooltipContent({ data, statCategory }: FutureGameTooltipProps) {
+  const ctx = data.upcomingContext;
+
+  // Points-related stats
+  if (statCategory === 'Points' || statCategory === 'Pts+Ast' || statCategory === 'Pts+Reb' || statCategory === 'PRA') {
+    return (
+      <div className="space-y-1 border-t border-border pt-2 mt-2">
+        <div className="text-xs font-semibold text-muted-foreground mb-1">Defensive Context</div>
+        {ctx?.dszName && <RankBadge rank={ctx.dszRank} label={`D-rank vs ${ctx.dszName}`} />}
+        {ctx?.dptName && <RankBadge rank={ctx.dptRank} label={`D-rank vs ${ctx.dptName}`} />}
+        {ctx?.dsz2Name && <RankBadge rank={ctx.dsz2Rank} label={`D-rank vs ${ctx.dsz2Name}`} />}
+        <StatDisplay value={ctx?.defRtg} label="DefRtg" />
+        <StatDisplay value={ctx?.pace} label="Pace" />
+        {ctx?.dpt2Name && <RankBadge rank={ctx.dpt2Rank} label={`D-rank vs ${ctx.dpt2Name}`} />}
+      </div>
+    );
+  }
+
+  // Assist-related stats
+  if (statCategory === 'Assists' || statCategory === 'Ast+Reb') {
+    return (
+      <div className="space-y-1 border-t border-border pt-2 mt-2">
+        <div className="text-xs font-semibold text-muted-foreground mb-1">Defensive Context</div>
+        {ctx?.dazName && <RankBadge rank={ctx.dazRank} label={`D-rank vs ${ctx.dazName}`} />}
+        {ctx?.daz2Name && <RankBadge rank={ctx.daz2Rank} label={`D-rank vs ${ctx.daz2Name}`} />}
+        <StatDisplay value={ctx?.assistsAllowed} label="Assists Allowed" />
+        <StatDisplay value={ctx?.defRtg} label="DefRtg" />
+      </div>
+    );
+  }
+
+  // Rebound-related stats (ranks are stored in dsz/dpt fields)
+  if (statCategory === 'Rebounds') {
+    return (
+      <div className="space-y-1 border-t border-border pt-2 mt-2">
+        <div className="text-xs font-semibold text-muted-foreground mb-1">Defensive Context</div>
+        <RankBadge rank={ctx?.dszRank} label="D-rank vs Total Reb" />
+        <RankBadge rank={ctx?.dsz2Rank} label="D-rank vs OREB" />
+        <RankBadge rank={ctx?.dptRank} label="D-rank vs DREB" />
+        <StatDisplay value={ctx?.pace} label="Pace" />
+      </div>
+    );
+  }
+
+  // Default: just show pace and def rating if available
+  return ctx ? (
+    <div className="space-y-1 border-t border-border pt-2 mt-2">
+      <div className="text-xs font-semibold text-muted-foreground mb-1">Defensive Context</div>
+      <StatDisplay value={ctx.defRtg} label="DefRtg" />
+      <StatDisplay value={ctx.pace} label="Pace" />
+    </div>
+  ) : null;
+}
+
 interface CustomTooltipProps {
   active?: boolean;
   payload?: Array<{ payload: ChartDataPoint & { isOver: boolean } }>;
   lineValue: number;
+  statCategory: StatCategory;
 }
 
-function CustomTooltip({ active, payload, lineValue }: CustomTooltipProps) {
+function CustomTooltip({ active, payload, lineValue, statCategory }: CustomTooltipProps) {
   if (!active || !payload?.length) return null;
 
   const data = payload[0].payload;
   if (data.isFuture) {
     return (
-      <div className="bg-popover border border-border rounded-lg p-3 shadow-xl">
+      <div className="bg-popover border border-border rounded-lg p-3 shadow-xl min-w-[200px]">
         <div className="text-sm font-medium">Upcoming Game</div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{data.date} vs</span>
           <TeamLogo team={data.opponent} size={16} />
           <span>{NBA_TEAMS[data.opponent]?.name || data.opponent}</span>
         </div>
+        {data.value !== null && (
+          <div className="text-xs text-muted-foreground mt-1">
+            Projected: <span className="font-mono font-semibold">{data.value.toFixed(1)}</span>
+          </div>
+        )}
+        <FutureGameTooltipContent data={data} statCategory={statCategory} />
       </div>
     );
   }
@@ -217,9 +316,10 @@ interface StatsChartProps {
   data: ChartDataPoint[];
   initialLineValue?: number;
   onLineChange?: (value: number, hitRateInfo: HitRateInfo) => void;
+  statCategory?: StatCategory;
 }
 
-export function StatsChart({ data, initialLineValue = 30.5, onLineChange }: StatsChartProps) {
+export function StatsChart({ data, initialLineValue = 30.5, onLineChange, statCategory = 'Points' }: StatsChartProps) {
   const [mounted, setMounted] = useState(false);
   const [lineValue, setLineValue] = useState(initialLineValue);
   const [isDragging, setIsDragging] = useState(false);
@@ -445,7 +545,7 @@ export function StatsChart({ data, initialLineValue = 30.5, onLineChange }: Stat
             tickFormatter={(value) => value.toString()}
             allowDataOverflow={false}
           />
-          <Tooltip content={<CustomTooltip lineValue={lineValue} />} cursor={false} />
+          <Tooltip content={<CustomTooltip lineValue={lineValue} statCategory={statCategory} />} cursor={false} />
 
           {/* Draggable Reference Line - clamped to valid range */}
           <ReferenceLine

@@ -435,3 +435,53 @@ export async function fetchAssistZoneMatchup(
   return response.json();
 }
 
+// Upcoming matchup context for tooltip
+export interface ApiUpcomingMatchupContext {
+  opponentName: string;
+  statType: 'points' | 'assists' | 'rebounds';
+  defRtg: number | null;
+  pace: number | null;
+  // Points-specific (dominant shooting zones)
+  dszRank: number | null;
+  dszName: string | null;
+  dsz2Rank: number | null;
+  dsz2Name: string | null;
+  // Points-specific (dominant play types)
+  dptRank: number | null;
+  dptName: string | null;
+  dpt2Rank: number | null;
+  dpt2Name: string | null;
+  // Assists-specific (dominant assist zones)
+  dazRank: number | null;
+  dazName: string | null;
+  daz2Rank: number | null;
+  daz2Name: string | null;
+  assistsAllowed: number | null;
+  // Rebounds-specific
+  reboundsAllowed: number | null;
+  orebAllowed: number | null;
+  drebAllowed: number | null;
+}
+
+/**
+ * Fetch upcoming matchup defensive context for tooltip
+ * @param playerId - Player ID
+ * @param opponentId - Opponent team ID
+ * @param statType - "points", "assists", or "rebounds"
+ */
+export async function fetchUpcomingMatchupContext(
+  playerId: number,
+  opponentId: number,
+  statType: string
+): Promise<ApiUpcomingMatchupContext> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/players/${playerId}/upcoming-matchup?opponent_id=${opponentId}&stat_type=${statType}`
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch upcoming matchup context: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
