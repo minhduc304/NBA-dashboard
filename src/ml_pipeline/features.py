@@ -218,6 +218,21 @@ class FeatureEngineer:
                 (df['is_home'] == 0) & (df['is_back_to_back'] == 1)
             ).astype(int)
 
+        # Rest disparity features (player's rest vs opponent's rest)
+        if 'days_rest' in df.columns and 'opponent_days_rest' in df.columns:
+            # Positive = advantage (more rest than opponent)
+            # Negative = disadvantage (less rest than opponent)
+            df['rest_disparity'] = (
+                df['days_rest'].fillna(2) - df['opponent_days_rest'].fillna(2)
+            )
+            # Opponent on back-to-back (1 day or less rest)
+            df['opponent_b2b_flag'] = (
+                df['opponent_days_rest'].fillna(2) <= 1
+            ).astype(int)
+        else:
+            df['rest_disparity'] = 0
+            df['opponent_b2b_flag'] = 0
+
         # Trend + Line interaction
         if 'stat_trend' in df.columns:
             # Trending up but line is below average (potential value)
@@ -653,6 +668,10 @@ class FeatureEngineer:
             'is_back_to_back',
             'games_in_l5',
             'games_in_l10',
+
+            # Rest disparity features
+            'rest_disparity',
+            'opponent_b2b_flag',
 
             # Temporal
             'day_of_week',

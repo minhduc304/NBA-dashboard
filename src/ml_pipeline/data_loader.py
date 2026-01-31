@@ -83,6 +83,7 @@ class PropDataLoader:
             pgl.days_rest,
             pgl.is_back_to_back,
             pgl.opponent_abbr,
+            pgl.opponent_days_rest,
 
             -- Team info
             pgl.team_id as player_team_id,
@@ -374,6 +375,7 @@ class PropDataLoader:
             pgl.days_rest,
             pgl.is_back_to_back,
             pgl.opponent_abbr,
+            pgl.opponent_days_rest,
             pgl.team_id as player_team_id
 
         FROM player_game_logs pgl

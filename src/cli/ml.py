@@ -119,14 +119,17 @@ def _run_pipeline_step(step: str, db_path: str):
         from src.ml_pipeline.feature_engineering import (
             add_derived_columns,
             compute_home_away_features,
-            compute_rest_days_features
+            compute_rest_days_features,
+            compute_opponent_rest_features
         )
         add_derived_columns()
         home_away = compute_home_away_features()
         rest_days = compute_rest_days_features()
+        opponent_rest = compute_opponent_rest_features()
         return {
             'home_away_updated': home_away.get('updated', 0),
-            'rest_days_updated': rest_days.get('updated', 0)
+            'rest_days_updated': rest_days.get('updated', 0),
+            'opponent_rest_updated': opponent_rest.get('updated', 0)
         }
 
     elif step == 'rolling':

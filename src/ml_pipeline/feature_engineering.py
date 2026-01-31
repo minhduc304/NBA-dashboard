@@ -33,6 +33,7 @@ def add_derived_columns(db_path: str = 'data/nba_stats.db') -> None:
         ('opponent_abbr', 'TEXT'),
         ('days_rest', 'INTEGER'),
         ('is_back_to_back', 'INTEGER'),
+        ('opponent_days_rest', 'INTEGER'),
     ]
 
     for col_name, col_type in new_columns:
@@ -166,6 +167,100 @@ def compute_rest_days_features(db_path: str = 'data/nba_stats.db') -> Dict[str, 
     return {'updated': len(updates)}
 
 
+def compute_opponent_rest_features(db_path: str = 'data/nba_stats.db') -> Dict[str, int]:
+    """
+    Compute opponent team's rest days for each player-game.
+
+    For each game, looks up the opponent's previous game date from the schedule
+    table and calculates how many days of rest the opponent had.
+
+    Returns:
+        Dict with update counts
+    """
+    from datetime import datetime
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Build a lookup of each team's game dates from the schedule table
+    # Format: {team_abbr: [sorted list of game_dates]}
+    cursor.execute('''
+        SELECT game_date, home_team_abbreviation, away_team_abbreviation
+        FROM schedule
+        WHERE game_date IS NOT NULL
+        ORDER BY game_date
+    ''')
+    schedule_rows = cursor.fetchall()
+
+    team_games = {}  # team_abbr -> list of game_dates (sorted)
+    for game_date, home_abbr, away_abbr in schedule_rows:
+        # Extract just the date part
+        date_str = game_date.split('T')[0] if game_date else None
+        if not date_str:
+            continue
+
+        if home_abbr:
+            if home_abbr not in team_games:
+                team_games[home_abbr] = []
+            team_games[home_abbr].append(date_str)
+
+        if away_abbr:
+            if away_abbr not in team_games:
+                team_games[away_abbr] = []
+            team_games[away_abbr].append(date_str)
+
+    # Sort and deduplicate game dates for each team
+    for team_abbr in team_games:
+        team_games[team_abbr] = sorted(set(team_games[team_abbr]))
+
+    # Get all player_game_logs rows that need updating
+    cursor.execute('''
+        SELECT rowid, game_date, opponent_abbr
+        FROM player_game_logs
+        WHERE opponent_abbr IS NOT NULL
+        AND opponent_days_rest IS NULL
+    ''')
+    rows = cursor.fetchall()
+
+    updates = []
+    for rowid, game_date, opponent_abbr in rows:
+        # Extract just the date part
+        current_date = game_date.split('T')[0] if game_date else None
+        if not current_date or opponent_abbr not in team_games:
+            continue
+
+        opp_game_dates = team_games[opponent_abbr]
+
+        # Find opponent's previous game before this date
+        prev_game_date = None
+        for gd in opp_game_dates:
+            if gd < current_date:
+                prev_game_date = gd
+            else:
+                break
+
+        if prev_game_date:
+            try:
+                curr = datetime.strptime(current_date, '%Y-%m-%d')
+                prev = datetime.strptime(prev_game_date, '%Y-%m-%d')
+                opponent_days_rest = (curr - prev).days
+                updates.append((opponent_days_rest, rowid))
+            except ValueError:
+                pass
+
+    # Batch update
+    cursor.executemany('''
+        UPDATE player_game_logs
+        SET opponent_days_rest = ?
+        WHERE rowid = ?
+    ''', updates)
+
+    conn.commit()
+    conn.close()
+
+    return {'updated': len(updates)}
+
+
 def get_feature_statistics(db_path: str = 'data/nba_stats.db') -> Dict:
     """Get statistics about the derived features."""
     conn = sqlite3.connect(db_path)
@@ -225,7 +320,7 @@ def verify_features(db_path: str = 'data/nba_stats.db') -> Dict:
     cursor.execute("PRAGMA table_info(player_game_logs)")
     cols = {row[1] for row in cursor.fetchall()}
 
-    expected = ['is_home', 'opponent_abbr', 'days_rest', 'is_back_to_back']
+    expected = ['is_home', 'opponent_abbr', 'days_rest', 'is_back_to_back', 'opponent_days_rest']
     result['columns'] = {col: col in cols for col in expected}
 
     # Check population
@@ -235,7 +330,8 @@ def verify_features(db_path: str = 'data/nba_stats.db') -> Dict:
             SUM(CASE WHEN is_home IS NOT NULL THEN 1 ELSE 0 END) as has_home,
             SUM(CASE WHEN opponent_abbr IS NOT NULL THEN 1 ELSE 0 END) as has_opp,
             SUM(CASE WHEN days_rest IS NOT NULL THEN 1 ELSE 0 END) as has_rest,
-            SUM(CASE WHEN is_back_to_back IS NOT NULL THEN 1 ELSE 0 END) as has_b2b
+            SUM(CASE WHEN is_back_to_back IS NOT NULL THEN 1 ELSE 0 END) as has_b2b,
+            SUM(CASE WHEN opponent_days_rest IS NOT NULL THEN 1 ELSE 0 END) as has_opp_rest
         FROM player_game_logs
     ''')
     row = cursor.fetchone()
@@ -244,7 +340,8 @@ def verify_features(db_path: str = 'data/nba_stats.db') -> Dict:
         'is_home': row[1],
         'opponent_abbr': row[2],
         'days_rest': row[3],
-        'is_back_to_back': row[4]
+        'is_back_to_back': row[4],
+        'opponent_days_rest': row[5]
     }
 
     conn.close()
@@ -270,6 +367,7 @@ def main():
         # Compute features
         compute_home_away_features(args.db)
         compute_rest_days_features(args.db)
+        compute_opponent_rest_features(args.db)
 
 
 if __name__ == '__main__':

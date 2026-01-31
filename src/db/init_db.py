@@ -201,6 +201,7 @@ def init_database(db_path: str = None) -> None:
             opponent_abbr TEXT,
             days_rest INTEGER,
             is_back_to_back INTEGER,
+            opponent_days_rest INTEGER,
             PRIMARY KEY (game_id, player_id),
             FOREIGN KEY (player_id) REFERENCES player_stats(player_id),
             FOREIGN KEY (team_id) REFERENCES teams(team_id)
