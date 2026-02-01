@@ -13,6 +13,27 @@ echo "DB Path: ${DB_PATH:-/app/data/nba_stats.db}"
 GCS_BUCKET="${GCS_BUCKET:-nba-stats-pipeline-data}"
 DB_PATH="${DB_PATH:-/app/data/nba_stats.db}"
 GCS_DB_PATH="gs://${GCS_BUCKET}/nba_stats.db"
+START_TIME=$(date +%s)
+
+# Error handler - send notification via Python
+handle_error() {
+    local exit_code=$?
+    local line_number=$1
+    echo "Pipeline FAILED at line ${line_number} (exit code: ${exit_code})"
+
+    # Send error notification via Python
+    python -c "
+from src.monitoring import MonitoringConfig, SlackNotifier
+config = MonitoringConfig.from_env()
+if config.slack_enabled:
+    notifier = SlackNotifier(config)
+    notifier.send_simple('Pipeline FAILED at line ${line_number} (exit code: ${exit_code})', is_error=True)
+" 2>/dev/null || true
+
+    exit $exit_code
+}
+
+trap 'handle_error $LINENO' ERR
 
 # Download database from Cloud Storage
 echo ""
@@ -24,10 +45,10 @@ else
     echo "WARNING: No existing database found in GCS. Starting fresh."
 fi
 
-# Run the ML pipeline
+# Run the ML pipeline (with integrated notifications)
 echo ""
 echo ">>> Running ML pipeline..."
-python -m src.cli.main --db "${DB_PATH}" ml pipeline
+python -m src.cli.main --db "${DB_PATH}" ml pipeline --notify
 
 # Upload updated database back to Cloud Storage
 echo ""
@@ -43,5 +64,15 @@ if [ "$(date +%u)" = "7" ]; then
     echo "Models uploaded successfully"
 fi
 
+# Calculate duration
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+DURATION_MIN=$((DURATION / 60))
+DURATION_SEC=$((DURATION % 60))
+
 echo ""
 echo "=== Pipeline completed at $(date) ==="
+echo "Total duration: ${DURATION_MIN}m ${DURATION_SEC}s"
+
+# Note: Rich Slack notification is sent by the pipeline command itself
+# This script no longer needs to send a separate notification

@@ -3,6 +3,7 @@
 import click
 import os
 import sys
+import traceback
 from datetime import datetime, timedelta
 
 
@@ -32,8 +33,9 @@ def ml(ctx):
 @click.option('--dry-run', is_flag=True, help='Show what would run without executing')
 @click.option('--step', multiple=True, type=click.Choice(list(PIPELINE_STEPS.keys())),
               help='Run specific step(s) only')
+@click.option('--notify/--no-notify', default=True, help='Send Slack notifications')
 @click.pass_context
-def pipeline(ctx, dry_run, step):
+def pipeline(ctx, dry_run, step, notify):
     """Run the daily ML pipeline."""
     from src.stats_collector import NBAStatsCollector
 
@@ -72,6 +74,8 @@ def pipeline(ctx, dry_run, step):
             click.echo(f"  Would run: {PIPELINE_STEPS.get(s, s)}")
         return
 
+    # Initialize monitoring
+    pipeline_result = _init_monitoring(ctx.obj.get('db'))
     errors = []
     results = {}
 
@@ -80,27 +84,50 @@ def pipeline(ctx, dry_run, step):
         click.echo(f"Step: {PIPELINE_STEPS.get(s, s)}")
         click.echo('─' * 40)
 
+        step_start = datetime.now()
         try:
             result = _run_pipeline_step(s, ctx.obj['db'])
             results[s] = result
             click.echo(f"Result: {result}")
+
+            # Track successful step
+            if pipeline_result:
+                _add_step_result(pipeline_result, s, step_start, result=result)
+
         except Exception as e:
             click.echo(click.style(f"FAILED: {e}", fg='red'))
             errors.append(s)
+
+            # Track failed step
+            if pipeline_result:
+                _add_step_result(
+                    pipeline_result, s, step_start,
+                    error=str(e),
+                    error_traceback=traceback.format_exc()
+                )
 
     # Summary
     click.echo(f"\n{'=' * 60}")
     click.echo("PIPELINE SUMMARY")
     click.echo('=' * 60)
 
-    for s, result in results.items():
-        status = click.style("OK", fg='green') if s not in errors else click.style("FAILED", fg='red')
+    for s in steps:
+        if s in results:
+            status = click.style("OK", fg='green')
+        elif s in errors:
+            status = click.style("FAILED", fg='red')
+        else:
+            status = click.style("SKIPPED", fg='yellow')
         click.echo(f"  {PIPELINE_STEPS.get(s, s)}: {status}")
 
     if errors:
         click.echo(click.style(f"\nPipeline completed with errors: {errors}", fg='red'))
     else:
         click.echo(click.style("\nPipeline completed successfully!", fg='green'))
+
+    # Send notification
+    if notify and pipeline_result:
+        _finalize_and_notify(pipeline_result, ctx.obj.get('db'), results)
 
 
 def _run_pipeline_step(step: str, db_path: str):
@@ -627,3 +654,196 @@ def paper_run(ctx):
     from src.ml_pipeline.paper_trading import daily_paper_trading_workflow
 
     daily_paper_trading_workflow(db_path=ctx.obj['db'])
+
+
+# Monitoring Helper Functions
+def _init_monitoring(db_path: str):
+    """Initialize monitoring and return PipelineResult if configured."""
+    try:
+        from src.monitoring import (
+            MonitoringConfig,
+            PipelineResult,
+            init_sentry,
+            set_pipeline_context,
+        )
+
+        config = MonitoringConfig.from_env()
+
+        # Initialize Sentry if configured
+        if config.sentry_enabled:
+            init_sentry(config)
+            set_pipeline_context(
+                job_name=config.job_name,
+                started_at=datetime.now(),
+            )
+
+        # Create pipeline result for tracking
+        pipeline_result = PipelineResult(
+            job_name=config.job_name,
+            started_at=datetime.now(),
+        )
+
+        return pipeline_result
+
+    except ImportError:
+        # Monitoring module not available
+        return None
+    except Exception as e:
+        click.echo(f"Warning: Failed to initialize monitoring: {e}")
+        return None
+
+
+def _add_step_result(
+    pipeline_result,
+    step_name: str,
+    started_at: datetime,
+    result=None,
+    error: str = None,
+    error_traceback: str = None,
+):
+    """Add a step result to the pipeline result."""
+    try:
+        from src.monitoring import StepResult, StepStatus
+
+        status = StepStatus.FAILED if error else StepStatus.SUCCESS
+
+        step_result = StepResult(
+            name=step_name,
+            status=status,
+            started_at=started_at,
+            ended_at=datetime.now(),
+            result=result,
+            error=error,
+            error_traceback=error_traceback,
+        )
+
+        pipeline_result.add_step(step_result)
+
+    except ImportError:
+        pass
+    except Exception as e:
+        click.echo(f"Warning: Failed to track step result: {e}")
+
+
+def _get_model_performance(db_path: str):
+    """Query model performance metrics from paper_trades."""
+    try:
+        import sqlite3
+        from src.monitoring import ModelPerformance
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # 7-day accuracy
+        cursor.execute('''
+            SELECT
+                AVG(classifier_correct) as accuracy,
+                COUNT(*) as count
+            FROM paper_trades
+            WHERE actual_value IS NOT NULL
+            AND game_date >= DATE('now', '-7 days')
+        ''')
+        row = cursor.fetchone()
+        accuracy_7d = row[0] * 100 if row and row[0] else None
+        count_7d = row[1] if row else 0
+
+        # 7-day ROI (assuming -110 odds: win +0.909 units, lose -1 unit)
+        cursor.execute('''
+            SELECT
+                SUM(CASE WHEN classifier_correct = 1 THEN 0.909 ELSE -1 END) as profit,
+                COUNT(*) as count
+            FROM paper_trades
+            WHERE actual_value IS NOT NULL
+            AND game_date >= DATE('now', '-7 days')
+        ''')
+        row = cursor.fetchone()
+        if row and row[1] and row[1] > 0:
+            roi_7d = (row[0] / row[1]) * 100
+        else:
+            roi_7d = None
+
+        # Pending predictions
+        cursor.execute('''
+            SELECT COUNT(*) FROM paper_trades
+            WHERE actual_value IS NULL
+        ''')
+        pending = cursor.fetchone()[0] or 0
+
+        # By stat accuracy
+        cursor.execute('''
+            SELECT
+                stat_type,
+                AVG(classifier_correct) * 100 as accuracy
+            FROM paper_trades
+            WHERE actual_value IS NOT NULL
+            AND game_date >= DATE('now', '-7 days')
+            GROUP BY stat_type
+        ''')
+        by_stat = {row[0]: row[1] for row in cursor.fetchall()}
+
+        conn.close()
+
+        return ModelPerformance(
+            accuracy_7d=accuracy_7d,
+            roi_7d=roi_7d,
+            pending_predictions=pending,
+            by_stat=by_stat,
+        )
+
+    except Exception:
+        return None
+
+
+def _get_api_health(step_results: dict):
+    """Extract API health from step results."""
+    try:
+        from src.monitoring import APIHealth
+
+        odds_api_result = step_results.get('odds_api', {})
+        if isinstance(odds_api_result, dict):
+            credits = odds_api_result.get('credits_remaining')
+            return APIHealth(odds_api_credits_remaining=credits)
+
+        return None
+
+    except Exception:
+        return None
+
+
+def _finalize_and_notify(pipeline_result, db_path: str, step_results: dict):
+    """Finalize pipeline result and send notifications."""
+    try:
+        from src.monitoring import (
+            MonitoringConfig,
+            SlackNotifier,
+            PipelineStatus,
+        )
+
+        # Finalize pipeline result
+        pipeline_result.ended_at = datetime.now()
+
+        # Add model performance
+        if db_path:
+            pipeline_result.model_performance = _get_model_performance(db_path)
+
+        # Add API health
+        pipeline_result.api_health = _get_api_health(step_results)
+
+        # Send Slack notification
+        config = MonitoringConfig.from_env()
+        if config.slack_enabled:
+            notifier = SlackNotifier(config)
+            notifier.notify_pipeline_result(pipeline_result)
+
+            # Check for quota warning
+            if pipeline_result.api_health:
+                credits = pipeline_result.api_health.odds_api_credits_remaining
+                if credits is not None and credits < config.odds_api_quota_warning_threshold:
+                    notifier.notify_quota_warning(credits)
+
+        click.echo(f"\nNotification sent (status: {pipeline_result.status.value})")
+
+    except ImportError:
+        pass
+    except Exception as e:
+        click.echo(f"Warning: Failed to send notification: {e}")

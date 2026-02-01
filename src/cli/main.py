@@ -18,6 +18,10 @@ import click
 import logging
 import os
 import sys
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
