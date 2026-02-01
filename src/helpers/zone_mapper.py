@@ -1,7 +1,5 @@
 """Zone Mapper - Pure functions for mapping shot coordinates to zones."""
 
-from typing import Tuple, Optional
-
 # Standard zone names used throughout the application
 ZONE_NAMES = [
     'Restricted Area',

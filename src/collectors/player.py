@@ -5,6 +5,8 @@ from typing import Optional, Dict, Set
 from datetime import datetime
 import time
 
+from nba_api.stats.static import players, teams
+
 from .base import BaseCollector, Result
 from ..models.player import PlayerStats
 from ..models.game import GameLog
@@ -220,8 +222,6 @@ class PlayerStatsCollector(BaseCollector):
 
     def collect_by_name(self, player_name: str) -> Result[PlayerStats]:
         """Collect stats for a player by name."""
-        from nba_api.stats.static import players
-
         player_dict = players.find_players_by_full_name(player_name)
         if not player_dict:
             return Result.error(f"Player '{player_name}' not found")
@@ -331,8 +331,6 @@ class RosterCollector:
         """Get all player IDs for players currently on NBA team rosters."""
         if self._cached_ids is not None:
             return self._cached_ids
-
-        from nba_api.stats.static import teams
 
         all_teams = teams.get_teams()
         rostered_players: Set[int] = set()

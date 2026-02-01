@@ -4,6 +4,7 @@ from typing import List, Dict, Optional
 from collections import defaultdict
 import re
 import time
+import unicodedata
 
 from .base import BaseCollector, Result
 from ..models.zones import ShootingZone, AssistZone
@@ -219,7 +220,6 @@ class AssistZoneCollector(BaseCollector):
 
     def _zone_stats_to_models(self, player_id: int, zone_stats: Dict[str, Dict]) -> list:
         """Convert zone stats dict to AssistZone models."""
-        from ..models.zones import AssistZone
         return [
             AssistZone(
                 player_id=player_id,
@@ -292,8 +292,6 @@ class AssistZoneCollector(BaseCollector):
             game_assists: List of assist events from play-by-play
             team_id: Player's team ID (unused, kept for API compatibility)
         """
-        import unicodedata
-
         zone_stats = defaultdict(lambda: {
             'assists': 0,
             'ast_fgm': 0,

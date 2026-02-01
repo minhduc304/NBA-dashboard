@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional
 import sqlite3
 from datetime import datetime
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,6 @@ class InjuriesCollector:
         Returns:
             Dictionary with collection stats: inserted, source, errors
         """
-        import requests
-
         stats = {'inserted': 0, 'source': None, 'errors': []}
         injuries = []
 
@@ -70,8 +69,6 @@ class InjuriesCollector:
 
     def _fetch_from_nba_com(self) -> List[Dict]:
         """Fetch injury data from NBA.com."""
-        import requests
-
         url = "https://cdn.nba.com/static/json/liveData/injuries/injuries_all.json"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -99,8 +96,6 @@ class InjuriesCollector:
 
     def _fetch_from_espn(self) -> List[Dict]:
         """Fetch injury data from ESPN API as fallback."""
-        import requests
-
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
         response = requests.get(url, timeout=30)
         response.raise_for_status()

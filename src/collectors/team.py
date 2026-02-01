@@ -3,6 +3,10 @@
 import logging
 from typing import List, Dict, Optional
 import time
+import sqlite3
+
+from nba_api.stats.endpoints import leaguedashteamstats
+from nba_api.stats.static import teams as nba_teams
 
 from .base import BaseCollector, Result
 from ..models.zones import TeamDefenseZone, TeamDefenseZones
@@ -104,7 +108,6 @@ class TeamDefenseCollector(BaseCollector):
 
     def _get_team_name(self, team_id: int) -> str:
         """Get team name from static data."""
-        from nba_api.stats.static import teams as nba_teams
         all_teams = nba_teams.get_teams()
         for team in all_teams:
             if team['id'] == team_id:
@@ -113,8 +116,6 @@ class TeamDefenseCollector(BaseCollector):
 
     def collect_all_teams(self, delay: float = 0.6) -> Dict[str, int]:
         """Collect defensive zone data for all teams."""
-        from nba_api.stats.static import teams as nba_teams
-
         all_teams = nba_teams.get_teams()
         results = {'collected': 0, 'skipped': 0, 'errors': 0}
 
@@ -164,9 +165,6 @@ class TeamPaceCollector:
         Returns:
             Dict with collection counts
         """
-        from nba_api.stats.endpoints import leaguedashteamstats
-        import sqlite3
-
         results = {'collected': 0, 'errors': 0}
 
         try:
@@ -244,8 +242,6 @@ class TeamRosterCollector(BaseCollector):
 
     def collect(self, team_id: int) -> Result[Dict]:
         """Collect roster for a team and update positions in player_stats."""
-        import sqlite3
-
         try:
             df = self._fetch_with_retry(
                 lambda: self.api_client.get_team_roster(team_id, self.season)

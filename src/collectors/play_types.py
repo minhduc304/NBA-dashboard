@@ -5,6 +5,9 @@ from typing import List, Dict, Optional
 import time
 import sqlite3
 
+from nba_api.stats.static import teams, players
+from nba_api.stats.endpoints import synergyplaytypes
+
 from .base import BaseCollector, Result
 from ..api.retry import RetryStrategy
 
@@ -99,9 +102,6 @@ class PlayTypesCollector(BaseCollector):
         Returns:
             Result containing list of play type dictionaries
         """
-        from nba_api.stats.endpoints import synergyplaytypes
-        from nba_api.stats.static import players
-
         # Get player name
         all_players = players.get_active_players()
         player_info = next((p for p in all_players if p['id'] == player_id), None)
@@ -251,8 +251,6 @@ class PlayTypesCollector(BaseCollector):
 
     def collect_by_name(self, player_name: str, force: bool = False) -> Result[List[Dict]]:
         """Collect play types for a player by name."""
-        from nba_api.stats.static import players
-
         player_dict = players.find_players_by_full_name(player_name)
         if not player_dict:
             return Result.error(f"Player '{player_name}' not found")
@@ -295,9 +293,6 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
 
     def collect(self, team_id: int) -> Result[List[Dict]]:
         """Collect defensive play type stats for a team."""
-        from nba_api.stats.endpoints import synergyplaytypes
-        from nba_api.stats.static import teams
-
         # Get team name
         all_teams = teams.get_teams()
         team_info = next((t for t in all_teams if t['id'] == team_id), None)
@@ -382,8 +377,6 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
 
     def collect_all_teams(self, delay: float = 0.8) -> Dict[str, int]:
         """Collect defensive play types for all teams."""
-        from nba_api.stats.static import teams
-
         all_teams = teams.get_teams()
         results = {'collected': 0, 'skipped': 0, 'errors': 0}
 
