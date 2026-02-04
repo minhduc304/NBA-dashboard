@@ -685,8 +685,8 @@ def _init_monitoring(db_path: str):
 
         return pipeline_result
 
-    except ImportError:
-        # Monitoring module not available
+    except ImportError as e:
+        click.echo(f"Warning: Monitoring module not available: {e}")
         return None
     except Exception as e:
         click.echo(f"Warning: Failed to initialize monitoring: {e}")
@@ -719,8 +719,8 @@ def _add_step_result(
 
         pipeline_result.add_step(step_result)
 
-    except ImportError:
-        pass
+    except ImportError as e:
+        click.echo(f"Warning: Monitoring import failed in step tracking: {e}")
     except Exception as e:
         click.echo(f"Warning: Failed to track step result: {e}")
 
@@ -843,7 +843,7 @@ def _finalize_and_notify(pipeline_result, db_path: str, step_results: dict):
 
         click.echo(f"\nNotification sent (status: {pipeline_result.status.value})")
 
-    except ImportError:
-        pass
+    except ImportError as e:
+        click.echo(f"Warning: Monitoring module import failed: {e}")
     except Exception as e:
         click.echo(f"Warning: Failed to send notification: {e}")

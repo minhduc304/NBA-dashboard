@@ -144,7 +144,7 @@ class PropsScraper:
                     events_scraped += 1
 
             except RateLimitError as e:
-                logger.error("RATE LIMITED: %s", e)
+                logger.error("RATE LIMITED: %s (quota: %s)", e, e.quota_remaining)
                 rate_limited = True
                 break
 
