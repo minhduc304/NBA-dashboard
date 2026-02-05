@@ -487,29 +487,42 @@ class PaperTrader:
         """
         from .config import STAT_COLUMNS
 
-        if game_date is None:
-            game_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        today = datetime.now().strftime('%Y-%m-%d')
 
         if verbose:
-            logger.info("Updating results for %s...", game_date)
+            if game_date:
+                logger.info("Updating results for %s...", game_date)
+            else:
+                logger.info("Updating all unresolved results (games before today)...")
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         # Find paper trades missing results
-        cursor.execute('''
-            SELECT pt.id, pt.player_name, pt.stat_type, pt.line,
-                   pt.regressor_pred, pt.classifier_pred
-            FROM paper_trades pt
-            WHERE pt.actual_value IS NULL
-            AND pt.game_date = ?
-        ''', (game_date,))
+        # If game_date specified, only update that date
+        # Otherwise, update ALL past unresolved predictions
+        if game_date:
+            cursor.execute('''
+                SELECT pt.id, pt.player_name, pt.stat_type, pt.line,
+                       pt.regressor_pred, pt.classifier_pred, pt.game_date
+                FROM paper_trades pt
+                WHERE pt.actual_value IS NULL
+                AND pt.game_date = ?
+            ''', (game_date,))
+        else:
+            cursor.execute('''
+                SELECT pt.id, pt.player_name, pt.stat_type, pt.line,
+                       pt.regressor_pred, pt.classifier_pred, pt.game_date
+                FROM paper_trades pt
+                WHERE pt.actual_value IS NULL
+                AND pt.game_date < ?
+            ''', (today,))
 
         pending = cursor.fetchall()
         updated = 0
 
         for row in pending:
-            pred_id, player_name, stat_type, line, reg_pred, clf_pred = row
+            pred_id, player_name, stat_type, line, reg_pred, clf_pred, row_game_date = row
             actual_value = None
             hit_over = None
 
@@ -522,7 +535,7 @@ class PaperTrader:
                 AND line = ?
                 AND game_date = ?
                 LIMIT 1
-            ''', (player_name, stat_type, line, game_date))
+            ''', (player_name, stat_type, line, row_game_date))
 
             result = cursor.fetchone()
             if result:
@@ -536,7 +549,7 @@ class PaperTrader:
                     WHERE LOWER(player_name) = LOWER(?)
                     AND DATE(game_date) = DATE(?)
                     LIMIT 1
-                ''', (player_name, game_date))
+                ''', (player_name, row_game_date))
 
                 gl_result = cursor.fetchone()
                 if gl_result and gl_result[0] is not None:
