@@ -1,0 +1,62 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'trained_models/**'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  PROJECT_ID: nba-stats-pipeline
+  REGION: us-west1
+  JOB_NAME: nba-daily-pipeline
+  IMAGE: gcr.io/nba-stats-pipeline/daily-pipeline
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Deploy to Cloud Run Job
+        run: |
+          gcloud run jobs update ${{ env.JOB_NAME }} \
+            --region=${{ env.REGION }} \
+            --image=${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Summary
+        run: |
+          echo "### Deployment Complete :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** ${{ env.IMAGE }}:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Job:** ${{ env.JOB_NAME }}" >> $GITHUB_STEP_SUMMARY

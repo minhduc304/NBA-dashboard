@@ -275,6 +275,17 @@ The system runs automatically on GCP Cloud Run Jobs:
 | `sync_db_from_cloud.sh` | Every 3 hours (launchd) | Syncs database from GCS to local Mac |
 
 
+### CI/CD
+
+GitHub Actions automatically deploys the ML pipeline on push to `master`, but only when relevant files change:
+
+| Paths | Triggers `deploy.yml` |
+|-------|----------------------|
+| `src/**`, `scripts/**`, `Dockerfile`, `requirements.txt`, `trained_models/**` | Yes |
+| `frontend/**`, `backend/**` | No |
+
+Manual deploys are always available via `workflow_dispatch`. Working on deployments for `frontend, API, testing`.
+
 ### Manual Operations
 
 ```bash
