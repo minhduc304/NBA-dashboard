@@ -1,6 +1,9 @@
 import json
+import logging
 import time
 import os
+
+import requests
 
 try:
     from playwright.sync_api import sync_playwright
@@ -14,6 +17,41 @@ try:
     stealth_available = True
 except ImportError:
     stealth_available = False
+
+logger = logging.getLogger(__name__)
+
+# Auth0 config extracted from Underdog's JWT claims
+AUTH0_TOKEN_URL = "https://login.underdogsports.com/oauth/token"
+AUTH0_CLIENT_ID = "cQvYz1T2BAFbix4dYR37dyD9O0Thf1s6"
+AUTH0_AUDIENCE = "https://api.underdogfantasy.com"
+
+
+def refresh_auth_token(email, password):
+    """
+    Refresh the Authorization token via Auth0 password grant.
+    Returns the new access token string, or raises on failure.
+    """
+    response = requests.post(AUTH0_TOKEN_URL, json={
+        "grant_type": "password",
+        "client_id": AUTH0_CLIENT_ID,
+        "username": email,
+        "password": password,
+        "audience": AUTH0_AUDIENCE,
+        "scope": "offline_access",
+    }, timeout=15)
+
+    if response.status_code != 200:
+        raise Exception(
+            f"Auth0 token refresh failed ({response.status_code}): {response.text}"
+        )
+
+    data = response.json()
+    access_token = data.get("access_token")
+    if not access_token:
+        raise Exception("Auth0 response missing access_token")
+
+    logger.info("Auth token refreshed via Auth0 password grant")
+    return access_token
 
 
 class TokenRefresher:

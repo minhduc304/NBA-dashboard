@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import os
 from dotenv import load_dotenv
-from .underdog_auth import refresh_tokens_in_config
+from .underdog_auth import refresh_auth_token, refresh_tokens_in_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +38,17 @@ class UnderdogScraper:
         self.load_config()
 
     def load_config(self):
-        with open(
-            os.path.join(os.path.dirname(__file__), "underdog_config.json"),
-            encoding="utf-8-sig",
-        ) as json_file:
-            self.config = json.load(json_file)
+        config_path = os.path.join(os.path.dirname(__file__), "underdog_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, encoding="utf-8-sig") as json_file:
+                self.config = json.load(json_file)
+        elif os.environ.get("UNDERDOG_CONFIG"):
+            logger.info("Loading underdog config from UNDERDOG_CONFIG env var")
+            self.config = json.loads(os.environ["UNDERDOG_CONFIG"])
+        else:
+            raise FileNotFoundError(
+                "underdog_config.json not found and UNDERDOG_CONFIG env var not set"
+            )
 
     def fetch_data(self, retry_on_auth_fail=True):
         ud_pickem_response = requests.get(self.config["ud_pickem_url"], headers=self.config["headers"], timeout=(10, 30))
@@ -55,14 +61,20 @@ class UnderdogScraper:
             elif ud_pickem_response.status_code == 401:
                 # Try to auto-refresh tokens if enabled
                 if self.auto_refresh and retry_on_auth_fail and self.email and self.password:
-                    logger.info("Token expired. Attempting to refresh tokens...")
+                    logger.info("Token expired. Attempting to refresh via Auth0 API...")
                     try:
-                        refresh_tokens_in_config(self.email, self.password)
-                        self.load_config()  # Reload config with new tokens
-                        logger.info("Tokens refreshed successfully. Retrying request...")
+                        new_token = refresh_auth_token(self.email, self.password)
+                        self.config["headers"]["Authorization"] = new_token
+                        logger.info("Token refreshed successfully. Retrying request...")
                         return self.fetch_data(retry_on_auth_fail=False)  # Retry once
                     except Exception as e:
-                        raise Exception(f"Failed to refresh tokens: {e}")
+                        logger.warning("Auth0 refresh failed: %s. Trying Playwright...", e)
+                        try:
+                            refresh_tokens_in_config(self.email, self.password)
+                            self.load_config()
+                            return self.fetch_data(retry_on_auth_fail=False)
+                        except Exception as e2:
+                            raise Exception(f"All token refresh methods failed: {e2}")
                 else:
                     raise Exception("Unauthorized - authentication required")
             else:
