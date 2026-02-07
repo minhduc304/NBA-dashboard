@@ -68,12 +68,14 @@ from .team import team
 from .collect import collect
 from .ml import ml
 from .scrape import scrape
+from .sync import sync
 
 cli.add_command(player)
 cli.add_command(team)
 cli.add_command(collect)
 cli.add_command(ml)
 cli.add_command(scrape)
+cli.add_command(sync)
 
 
 if __name__ == '__main__':
