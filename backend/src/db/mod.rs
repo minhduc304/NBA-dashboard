@@ -528,6 +528,10 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
     let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
         .format("%Y-%m-%d")
         .to_string();
+    // Late-night ET games on "tomorrow" have UTC dates that spill into day_after_tomorrow
+    let day_after_tomorrow = (chrono::Local::now() + chrono::Duration::days(2))
+        .format("%Y-%m-%d")
+        .to_string();
 
     // Try exact match first
     let results = sqlx::query_as::<_, UnderdogProp>(
@@ -541,7 +545,7 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
                           ORDER BY updated_at DESC
                       ) as rn
                FROM underdog_props
-               WHERE full_name = ? AND DATE(scheduled_at) IN (?, ?)
+               WHERE full_name = ? AND DATE(scheduled_at) IN (?, ?, ?)
            )
            WHERE rn = 1
            ORDER BY stat_name, choice"#
@@ -549,6 +553,7 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
     .bind(player_name)
     .bind(&today)
     .bind(&tomorrow)
+    .bind(&day_after_tomorrow)
     .fetch_all(pool)
     .await?;
 
@@ -569,7 +574,7 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
                           ORDER BY updated_at DESC
                       ) as rn
                FROM underdog_props
-               WHERE full_name = ? AND DATE(scheduled_at) IN (?, ?)
+               WHERE full_name = ? AND DATE(scheduled_at) IN (?, ?, ?)
            )
            WHERE rn = 1
            ORDER BY stat_name, choice"#
@@ -577,6 +582,7 @@ pub async fn get_player_props(pool: &SqlitePool, player_name: &str) -> Result<Ve
     .bind(&normalized)
     .bind(&today)
     .bind(&tomorrow)
+    .bind(&day_after_tomorrow)
     .fetch_all(pool)
     .await
 }
