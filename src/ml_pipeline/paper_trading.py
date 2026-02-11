@@ -527,15 +527,17 @@ class PaperTrader:
             hit_over = None
 
             # First, try prop_outcomes table
+            # paper_trades.game_date may be UTC (1 day ahead of ET game date),
+            # so also check the previous day
             cursor.execute('''
                 SELECT actual_value, hit_over
                 FROM prop_outcomes
                 WHERE player_name = ?
                 AND stat_type = ?
                 AND line = ?
-                AND game_date = ?
+                AND game_date IN (?, DATE(?, '-1 day'))
                 LIMIT 1
-            ''', (player_name, stat_type, line, row_game_date))
+            ''', (player_name, stat_type, line, row_game_date, row_game_date))
 
             result = cursor.fetchone()
             if result:
@@ -547,9 +549,9 @@ class PaperTrader:
                     SELECT {stat_col}
                     FROM player_game_logs
                     WHERE LOWER(player_name) = LOWER(?)
-                    AND DATE(game_date) = DATE(?)
+                    AND DATE(game_date) IN (DATE(?), DATE(?, '-1 day'))
                     LIMIT 1
-                ''', (player_name, row_game_date))
+                ''', (player_name, row_game_date, row_game_date))
 
                 gl_result = cursor.fetchone()
                 if gl_result and gl_result[0] is not None:
