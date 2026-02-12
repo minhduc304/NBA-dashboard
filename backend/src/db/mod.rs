@@ -649,10 +649,11 @@ pub async fn get_dnp_players_for_game(
                COALESCE(ps.{}, 0.0) as season_avg
         FROM player_stats ps
         WHERE ps.team_id = ?
-          AND ps.player_id NOT IN (
-              SELECT CAST(player_id AS INTEGER)
-              FROM player_game_logs
-              WHERE game_id = ?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM player_game_logs pgl
+              WHERE pgl.game_id = ?
+                AND CAST(pgl.player_id AS TEXT) = CAST(ps.player_id AS TEXT)
           )
         ORDER BY season_avg DESC
         LIMIT 2

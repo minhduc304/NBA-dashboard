@@ -452,7 +452,7 @@ def _get_injury_context(
             SELECT game_date
             FROM player_game_logs
             WHERE player_id = ?
-            AND DATE(game_date) > DATE(?)
+            AND game_date > ?
             AND min > 0
             ORDER BY game_date ASC
             LIMIT 1
@@ -466,8 +466,8 @@ def _get_injury_context(
                 SELECT COUNT(*)
                 FROM player_game_logs
                 WHERE player_id = ?
-                AND DATE(game_date) >= DATE(?)
-                AND DATE(game_date) <= DATE(?)
+                AND game_date >= ?
+                AND game_date <= ?
                 AND min > 0
             ''', (player_id, first_game_back[0], game_date))
 

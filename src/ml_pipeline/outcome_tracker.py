@@ -350,7 +350,7 @@ class PropOutcomeTracker:
             SELECT {sum_expr} as stat_value
             FROM player_game_logs
             WHERE player_id = ?
-            AND DATE(game_date) < DATE(?)
+            AND game_date < ?
             AND min > 0
             ORDER BY game_date DESC
             LIMIT ?

@@ -549,7 +549,7 @@ class PaperTrader:
                     SELECT {stat_col}
                     FROM player_game_logs
                     WHERE LOWER(player_name) = LOWER(?)
-                    AND DATE(game_date) IN (DATE(?), DATE(?, '-1 day'))
+                    AND game_date IN (?, DATE(?, '-1 day'))
                     LIMIT 1
                 ''', (player_name, row_game_date, row_game_date))
 
