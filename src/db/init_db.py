@@ -208,6 +208,10 @@ def init_database(db_path: str = None) -> None:
         )
     ''')
 
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_player_date ON player_game_logs(player_id, game_date)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_game_id ON player_game_logs(game_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_season ON player_game_logs(season)')
+
     # =========================================================================
     # TEAM DEFENSIVE ZONES TABLE (opponent shooting by zone)
     # =========================================================================
