@@ -361,6 +361,30 @@ def train(ctx, stat, val_days, test_days, no_save, use_tuned, list_stats):
 
 
 @ml.command()
+@click.option('--stat-type', multiple=True, help='Specific stat(s) to compare')
+@click.pass_context
+def compare(ctx, stat_type):
+    """Compare tree-based models vs neural networks side-by-side."""
+    from src.ml_pipeline.config import PRIORITY_STATS
+    from src.ml_pipeline.nn_comparison import compare_models, print_comparison
+
+    stats_to_compare = list(stat_type) if stat_type else PRIORITY_STATS
+
+    click.echo("=" * 65)
+    click.echo("Model Comparison: Tree Models vs Neural Networks")
+    click.echo("=" * 65)
+    click.echo(f"Stats: {', '.join(stats_to_compare)}")
+
+    for stat in stats_to_compare:
+        click.echo(f"\n--- Comparing {stat} ---")
+        try:
+            results = compare_models(stat, db_path=ctx.obj['db'], verbose=True)
+            print_comparison(results)
+        except Exception as e:
+            click.echo(click.style(f"  {stat}: FAILED - {e}", fg='red'))
+
+
+@ml.command()
 @click.option('--stat', multiple=True, help='Specific stat(s) to tune')
 @click.option('--trials', default=50, help='Trials per model')
 @click.option('--timeout', default=None, type=int, help='Timeout per model (seconds)')
@@ -747,10 +771,18 @@ def _get_model_performance(db_path: str):
         accuracy_7d = row[0] * 100 if row and row[0] else None
         count_7d = row[1] if row else 0
 
-        # 7-day ROI (assuming -110 odds: win +0.909 units, lose -1 unit)
+        # 7-day ROI using actual odds when available, fallback to -110
         cursor.execute('''
             SELECT
-                SUM(CASE WHEN classifier_correct = 1 THEN 0.909 ELSE -1 END) as profit,
+                SUM(CASE
+                    WHEN classifier_correct = 1 AND over_odds IS NOT NULL AND classifier_pred = 1
+                        THEN (100.0 / ABS(over_odds))
+                    WHEN classifier_correct = 1 AND under_odds IS NOT NULL AND classifier_pred = 0
+                        THEN (100.0 / ABS(under_odds))
+                    WHEN classifier_correct = 1
+                        THEN 0.909
+                    ELSE -1
+                END) as profit,
                 COUNT(*) as count
             FROM paper_trades
             WHERE actual_value IS NOT NULL

@@ -14,7 +14,7 @@ from typing import Dict, Optional, List
 from .config import DEFAULT_DB_PATH, DEFAULT_MODEL_DIR
 
 logger = logging.getLogger(__name__)
-from .features import FeatureEngineer
+from .features import FeatureEngineer, american_to_implied_prob, american_to_decimal, calculate_vig_and_fair_probs
 from .data_loader import PropDataLoader
 
 
@@ -148,16 +148,72 @@ class PropPredictor:
         classifier_says_over = df['over_prob'] > 0.5
         df['models_agree'] = regressor_says_over == classifier_says_over
 
+        # Probability-based edge and expected value
+        self._add_probability_edge(df)
+
         # Recommendation (based on classifier only)
         df['recommendation'] = df.apply(self._get_recommendation, axis=1)
 
         return df
+
+    def _add_probability_edge(self, df: pd.DataFrame) -> None:
+        """
+        Add probability-based edge and expected value columns.
+
+        Uses odds data (when available) to compute:
+        - prob_edge_over/under: model prob minus vig-free implied prob
+        - ev_over/under: expected value per unit staked
+        - expected_value: EV in the recommended direction
+        """
+        has_over_odds = 'over_odds' in df.columns
+        has_under_odds = 'under_odds' in df.columns
+
+        if has_over_odds and has_under_odds:
+            # Compute fair (vig-removed) probabilities
+            fair_probs = df.apply(
+                lambda r: calculate_vig_and_fair_probs(r['over_odds'], r['under_odds']),
+                axis=1,
+            )
+            df['over_fair_prob'] = fair_probs.apply(lambda x: x[1])
+            df['under_fair_prob'] = fair_probs.apply(lambda x: x[2])
+
+            # Decimal odds for EV calculation
+            df['decimal_over'] = df['over_odds'].apply(american_to_decimal)
+            df['decimal_under'] = df['under_odds'].apply(american_to_decimal)
+        elif has_over_odds:
+            # Only over odds available (e.g., Underdog props)
+            df['over_fair_prob'] = df['over_odds'].apply(american_to_implied_prob)
+            df['under_fair_prob'] = np.nan
+            df['decimal_over'] = df['over_odds'].apply(american_to_decimal)
+            df['decimal_under'] = np.nan
+        else:
+            # No odds data — fill with NaN
+            df['over_fair_prob'] = np.nan
+            df['under_fair_prob'] = np.nan
+            df['decimal_over'] = np.nan
+            df['decimal_under'] = np.nan
+
+        # Probability edge: model prob minus fair implied prob
+        df['prob_edge_over'] = df['over_prob'] - df['over_fair_prob']
+        df['prob_edge_under'] = df['under_prob'] - df['under_fair_prob']
+
+        # Expected value: (model_prob * decimal_odds) - 1
+        df['ev_over'] = (df['over_prob'] * df['decimal_over']) - 1
+        df['ev_under'] = (df['under_prob'] * df['decimal_under']) - 1
+
+        # Expected value in the predicted direction
+        df['expected_value'] = np.where(
+            df['over_prob'] > 0.5,
+            df['ev_over'],
+            df['ev_under'],
+        )
 
     def _get_recommendation(
         self,
         row: pd.Series,
         min_over_prob: float = 0.55,
         min_under_prob: float = 0.55,
+        min_ev: Optional[float] = None,
     ) -> str:
         """
         Generate recommendation based on classifier probability.
@@ -170,6 +226,7 @@ class PropPredictor:
             row: Row from predictions DataFrame
             min_over_prob: Minimum probability for OVER recommendation
             min_under_prob: Minimum probability for UNDER recommendation
+            min_ev: Minimum expected value threshold (None = disabled)
 
         Returns:
             'OVER', 'UNDER', or 'SKIP'
@@ -178,10 +235,16 @@ class PropPredictor:
 
         # OVER: Classifier predicts high probability of going over
         if over_prob >= min_over_prob:
+            if min_ev is not None and not np.isnan(row.get('ev_over', np.nan)):
+                if row['ev_over'] < min_ev:
+                    return 'SKIP'
             return 'OVER'
 
         # UNDER: Classifier predicts high probability of going under
         if over_prob <= (1 - min_under_prob):
+            if min_ev is not None and not np.isnan(row.get('ev_under', np.nan)):
+                if row['ev_under'] < min_ev:
+                    return 'SKIP'
             return 'UNDER'
 
         return 'SKIP'

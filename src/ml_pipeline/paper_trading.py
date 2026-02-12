@@ -94,6 +94,13 @@ class PaperTrader:
             )
         ''')
 
+        # Add odds/EV columns if they don't exist (migration for existing DBs)
+        cursor.execute("PRAGMA table_info(paper_trades)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        for col_name, col_type in [('over_odds', 'REAL'), ('under_odds', 'REAL'), ('expected_value', 'REAL')]:
+            if col_name not in existing_cols:
+                cursor.execute(f'ALTER TABLE paper_trades ADD COLUMN {col_name} {col_type}')
+
         # Model version tracking
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS model_versions (
@@ -284,6 +291,21 @@ class PaperTrader:
                 clf_preds = (clf_probs > 0.5).astype(int)
                 reg_preds = reg.predict(X_reg)
 
+                # Compute expected value per row
+                from .features import american_to_decimal
+                ev_values = []
+                for i, row in props_df.iterrows():
+                    idx = props_df.index.get_loc(i)
+                    prob = float(clf_probs[idx])
+                    over_odds = row.get('over_odds')
+                    under_odds = row.get('under_odds')
+                    dec_over = american_to_decimal(over_odds) if pd.notna(over_odds) else np.nan
+                    dec_under = american_to_decimal(under_odds) if pd.notna(under_odds) else np.nan
+                    ev_over = (prob * dec_over) - 1 if not np.isnan(dec_over) else np.nan
+                    ev_under = ((1 - prob) * dec_under) - 1 if not np.isnan(dec_under) else np.nan
+                    ev = ev_over if prob > 0.5 else ev_under
+                    ev_values.append(ev)
+
                 # Log to database
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -291,16 +313,19 @@ class PaperTrader:
                 logged = 0
                 for i, row in props_df.iterrows():
                     idx = props_df.index.get_loc(i)
+                    over_odds_val = row.get('over_odds')
+                    under_odds_val = row.get('under_odds')
                     try:
                         cursor.execute('''
                             INSERT OR IGNORE INTO paper_trades (
                                 logged_at, game_date, player_name, stat_type,
                                 line, sportsbook, model_version,
-                                regressor_pred, classifier_prob, classifier_pred
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                regressor_pred, classifier_prob, classifier_pred,
+                                over_odds, under_odds, expected_value
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             logged_at,
-                            row.get('game_date', game_date),  # Use actual game date from props
+                            row.get('game_date', game_date),
                             row.get('player_name', ''),
                             stat_type,
                             row.get('line', 0),
@@ -309,6 +334,9 @@ class PaperTrader:
                             float(reg_preds[idx]),
                             float(clf_probs[idx]),
                             int(clf_preds[idx]),
+                            float(over_odds_val) if pd.notna(over_odds_val) else None,
+                            float(under_odds_val) if pd.notna(under_odds_val) else None,
+                            float(ev_values[idx]) if not np.isnan(ev_values[idx]) else None,
                         ))
                         if cursor.rowcount > 0:
                             logged += 1
@@ -707,12 +735,18 @@ class PaperTrader:
         ''', params)
         by_date = cursor.fetchall()
 
-        # Calculate ROI (at -110 odds)
-        # Win: profit = 100/110 = 0.909 units
-        # Loss: profit = -1 unit
+        # Calculate ROI using actual odds when available, fallback to -110
         roi_query = f'''
             SELECT
-                SUM(CASE WHEN classifier_correct = 1 THEN 0.909 ELSE -1 END) as profit
+                SUM(CASE
+                    WHEN classifier_correct = 1 AND over_odds IS NOT NULL AND classifier_pred = 1
+                        THEN (100.0 / ABS(over_odds))
+                    WHEN classifier_correct = 1 AND under_odds IS NOT NULL AND classifier_pred = 0
+                        THEN (100.0 / ABS(under_odds))
+                    WHEN classifier_correct = 1
+                        THEN 0.909
+                    ELSE -1
+                END) as profit
             FROM paper_trades
             WHERE {where_sql}
         '''

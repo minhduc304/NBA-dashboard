@@ -28,6 +28,25 @@ def american_to_implied_prob(odds: float) -> float:
         return 100 / (odds + 100)
 
 
+def american_to_decimal(odds: float) -> float:
+    """
+    Convert American odds to decimal odds (payout per unit staked).
+
+    Args:
+        odds: American odds (e.g., -110, +150)
+
+    Returns:
+        Decimal odds (e.g., 1.909, 2.50)
+    """
+    if odds is None or np.isnan(odds):
+        return np.nan
+    if odds < 0:
+        return 1 + (100 / abs(odds))
+    elif odds > 0:
+        return 1 + (odds / 100)
+    return np.nan
+
+
 def calculate_vig_and_fair_probs(
     over_odds: float,
     under_odds: float

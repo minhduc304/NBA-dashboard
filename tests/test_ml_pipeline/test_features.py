@@ -6,9 +6,45 @@ import pytest
 
 from src.ml_pipeline.features import (
     american_to_implied_prob,
+    american_to_decimal,
     calculate_vig_and_fair_probs,
     FeatureEngineer,
 )
+
+
+#
+# american_to_decimal
+#
+
+class TestAmericanToDecimal:
+    def test_standard_negative_odds(self):
+        assert american_to_decimal(-110) == pytest.approx(1.909, rel=0.01)
+
+    def test_heavy_favorite(self):
+        assert american_to_decimal(-200) == pytest.approx(1.50, rel=0.01)
+
+    def test_standard_positive_odds(self):
+        assert american_to_decimal(150) == pytest.approx(2.50, rel=0.01)
+
+    def test_heavy_underdog(self):
+        assert american_to_decimal(300) == pytest.approx(4.00, rel=0.01)
+
+    def test_even_odds(self):
+        # +100 → 2.00
+        assert american_to_decimal(100) == pytest.approx(2.00, rel=0.01)
+
+    def test_minus_100(self):
+        # -100 → 2.00
+        assert american_to_decimal(-100) == pytest.approx(2.00, rel=0.01)
+
+    def test_none_returns_nan(self):
+        assert np.isnan(american_to_decimal(None))
+
+    def test_nan_returns_nan(self):
+        assert np.isnan(american_to_decimal(float('nan')))
+
+    def test_zero_odds(self):
+        assert np.isnan(american_to_decimal(0))
 
 
 #
