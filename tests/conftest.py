@@ -60,6 +60,7 @@ def sample_player_info_data():
     return pd.DataFrame([{
         'TEAM_ID': 1610612744,  # Warriors
         'POSITION': 'Guard',
+        'DISPLAY_FIRST_LAST': 'Test Player',
     }])
 
 
