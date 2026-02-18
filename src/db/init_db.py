@@ -220,6 +220,8 @@ def init_database(db_path: str = None) -> None:
             team_id INTEGER NOT NULL,
             season TEXT NOT NULL,
             zone_name TEXT NOT NULL,
+            zone_area TEXT DEFAULT '',
+            zone_range TEXT DEFAULT '',
 
             -- Opponent shooting stats (per-game averages)
             opp_fgm REAL,
