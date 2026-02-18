@@ -5,21 +5,24 @@ Merges cloud-managed tables into the local DB without overwriting
 local-only tables (shooting zones, assist zones, play types, etc.).
 """
 
+import json
 import logging
-import os
 import shutil
 import sqlite3
-import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import google.auth
+from google.cloud import storage as gcs
+from google.oauth2 import credentials as oauth2_credentials
+
 from src.config import get_db_path
 
 logger = logging.getLogger(__name__)
 
-GCS_BUCKET = os.getenv("GCS_BUCKET", "nba-stats-pipeline-data")
+GCS_BUCKET = "nba-stats-pipeline-data"
 
 # Tables managed by the cloud pipeline and their merge strategy.
 # "replace" = INSERT OR REPLACE (cloud wins on PK match)
@@ -84,6 +87,47 @@ class SyncReport:
         return [r for r in self.results if r.error]
 
 
+def _get_gcs_client() -> gcs.Client:
+    """Create a GCS client.
+
+    Tries Application Default Credentials first, then falls back to
+    gcloud CLI user credentials (legacy adc.json) so that users who
+    have run ``gcloud auth login`` don't need a separate ADC setup.
+    """
+    try:
+        creds, project = google.auth.default()
+        return gcs.Client(credentials=creds, project=project)
+    except google.auth.exceptions.DefaultCredentialsError:
+        pass
+
+    # Fall back to gcloud CLI legacy credentials
+    creds = _load_gcloud_user_credentials()
+    if creds:
+        return gcs.Client(credentials=creds, project="nba-stats-pipeline")
+
+    raise google.auth.exceptions.DefaultCredentialsError(
+        "No GCS credentials found. Run: gcloud auth application-default login"
+    )
+
+
+def _load_gcloud_user_credentials() -> Optional[oauth2_credentials.Credentials]:
+    """Load OAuth2 credentials from gcloud CLI legacy adc.json files."""
+    gcloud_dir = Path.home() / ".config" / "gcloud" / "legacy_credentials"
+    if not gcloud_dir.exists():
+        return None
+
+    # Find the first account's adc.json
+    for account_dir in gcloud_dir.iterdir():
+        adc_file = account_dir / "adc.json"
+        if adc_file.exists():
+            data = json.loads(adc_file.read_text())
+            creds = oauth2_credentials.Credentials.from_authorized_user_info(data)
+            logger.debug("Using gcloud credentials for %s", account_dir.name)
+            return creds
+
+    return None
+
+
 class DatabaseSyncer:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or get_db_path()
@@ -122,14 +166,12 @@ class DatabaseSyncer:
         if not Path(self.db_path).exists():
             raise FileNotFoundError(f"Local DB not found: {self.db_path}")
 
-        gcs_path = f"gs://{GCS_BUCKET}/nba_stats.db"
-        logger.info("Uploading %s to %s", self.db_path, gcs_path)
-        subprocess.run(
-            ["gsutil", "cp", self.db_path, gcs_path],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        client = _get_gcs_client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob("nba_stats.db")
+
+        logger.info("Uploading %s to gs://%s/nba_stats.db", self.db_path, GCS_BUCKET)
+        blob.upload_from_filename(self.db_path)
         logger.info("Upload complete")
 
     def status(self) -> dict[str, int]:
@@ -327,39 +369,41 @@ class DatabaseSyncer:
         """Download cloud DB to a temp file in data/."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = self.data_dir / "cloud_nba_stats.db"
-        gcs_path = f"gs://{GCS_BUCKET}/nba_stats.db"
-        logger.info("Downloading %s ...", gcs_path)
-        subprocess.run(
-            ["gsutil", "cp", gcs_path, str(tmp_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+
+        client = _get_gcs_client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob("nba_stats.db")
+
+        logger.info("Downloading gs://%s/nba_stats.db ...", GCS_BUCKET)
+        blob.download_to_filename(str(tmp_path))
         logger.info("Downloaded cloud DB (%s)", _human_size(tmp_path))
         return tmp_path
 
     def _sync_models(self) -> None:
         """Sync trained model files from GCS."""
         models_dir = self.project_root / "trained_models"
-        gcs_pattern = f"gs://{GCS_BUCKET}/trained_models/*.joblib"
 
-        # Check if models exist in cloud
-        check = subprocess.run(
-            ["gsutil", "-q", "stat", gcs_pattern],
-            capture_output=True,
-        )
-        if check.returncode != 0:
+        client = _get_gcs_client()
+        bucket = client.bucket(GCS_BUCKET)
+
+        # List model blobs in the cloud
+        blobs = list(bucket.list_blobs(prefix="trained_models/"))
+        model_blobs = [b for b in blobs if b.name.endswith(".joblib")]
+
+        if not model_blobs:
             logger.info("No trained models in cloud, skipping")
             return
 
         models_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Syncing trained models...")
-        subprocess.run(
-            ["gsutil", "-m", "cp", gcs_pattern, str(models_dir) + "/"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        logger.info("Syncing %d trained models...", len(model_blobs))
+
+        for blob in model_blobs:
+            # blob.name is "trained_models/foo.joblib" — extract filename
+            filename = Path(blob.name).name
+            local_path = models_dir / filename
+            blob.download_to_filename(str(local_path))
+            logger.debug("Downloaded %s", filename)
+
         logger.info("Models synced")
 
 

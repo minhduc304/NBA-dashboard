@@ -104,18 +104,20 @@ class OddsAPI:
             self._requests_remaining = response.headers.get('x-requests-remaining')
             self._requests_used = response.headers.get('x-requests-used')
 
-            # Check for rate limiting or quota exhaustion
+            # Check for rate limiting, quota exhaustion, or invalid key
             quota_exhausted = False
-            if response.status_code == 429:
+            if response.status_code in (429, 401, 403):
                 quota_exhausted = True
             elif self._requests_remaining and int(self._requests_remaining) <= 0:
                 quota_exhausted = True
 
             if quota_exhausted:
+                reason = "exhausted" if response.status_code == 429 else f"returned {response.status_code}"
                 # Try to rotate to next key
                 if self._rotate_key():
                     logger.warning(
-                        "API key exhausted, rotating to next key (%d/%d)",
+                        "API key %s, rotating to next key (%d/%d)",
+                        reason,
                         self._current_key_index + 1,
                         len(self._api_keys)
                     )
@@ -124,7 +126,7 @@ class OddsAPI:
                     # No more keys available
                     remaining = int(self._requests_remaining) if self._requests_remaining else 0
                     raise RateLimitError(
-                        f"All API keys exhausted. Keys used: {len(self._api_keys)}",
+                        f"All API keys failed (last: {reason}). Keys tried: {len(self._api_keys)}",
                         quota_remaining=remaining
                     )
 
