@@ -36,6 +36,7 @@ class PropRegressor:
         y: np.ndarray,
         eval_set: Optional[Tuple] = None,
         feature_names: Optional[list] = None,
+        sample_weight: Optional[np.ndarray] = None,
     ) -> 'PropRegressor':
         """
         Train the regressor.
@@ -45,6 +46,7 @@ class PropRegressor:
             y: Target values (actual stat values)
             eval_set: Optional (X_val, y_val) tuple for early stopping
             feature_names: Optional list of feature names
+            sample_weight: Optional per-sample weights for recency weighting
 
         Returns:
             self
@@ -64,6 +66,8 @@ class PropRegressor:
             fit_params['callbacks'] = [
                 lgb.early_stopping(stopping_rounds=early_stopping, verbose=False)
             ]
+        if sample_weight is not None:
+            fit_params['sample_weight'] = sample_weight
 
         self.model.fit(X, y, **fit_params)
 
@@ -127,6 +131,7 @@ class PropClassifier:
         y: np.ndarray,
         eval_set: Optional[Tuple] = None,
         feature_names: Optional[list] = None,
+        sample_weight: Optional[np.ndarray] = None,
     ) -> 'PropClassifier':
         """
         Train the classifier.
@@ -136,6 +141,7 @@ class PropClassifier:
             y: Target values (0=under, 1=over)
             eval_set: Optional (X_val, y_val) tuple for early stopping
             feature_names: Optional list of feature names
+            sample_weight: Optional per-sample weights for recency weighting
 
         Returns:
             self
@@ -157,6 +163,8 @@ class PropClassifier:
         fit_params = {'verbose': False}
         if eval_set:
             fit_params['eval_set'] = [eval_set]
+        if sample_weight is not None:
+            fit_params['sample_weight'] = sample_weight
 
         self.model.fit(X, y, **fit_params)
 

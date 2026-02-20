@@ -12,13 +12,18 @@ from typing import Dict, List, Optional, Tuple, Literal, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
-from .config import DEFAULT_DB_PATH, DEFAULT_MODEL_DIR, get_model_params
+from .config import (
+    DEFAULT_DB_PATH, DEFAULT_MODEL_DIR,
+    CLASSIFIER_RECENCY_HALF_LIFE, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT, RECENCY_MIN_WEIGHT,
+    get_model_params,
+)
 
 logger = logging.getLogger(__name__)
 from .data_loader import PropDataLoader
 from .features import FeatureEngineer
 from .models import PropClassifier, PropRegressor
 from .evaluator import evaluate_classifier, calculate_betting_ev
+from .trainer import ModelTrainer
 
 
 @dataclass
@@ -295,10 +300,19 @@ def run_cv(
         y_val = val_df['hit_over'].values
         y_test = test_df['hit_over'].values
 
+        # Compute recency weights for this fold's training data (per-stat half-life)
+        clf_half_life = CLASSIFIER_RECENCY_HALF_LIFE.get(
+            stat_type, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT
+        )
+        fold_weights = ModelTrainer._compute_recency_weights(
+            train_df['game_date'], clf_half_life, RECENCY_MIN_WEIGHT
+        )
+
         # Train classifier
         params = get_model_params(stat_type, 'classifier', use_tuned_params)
         clf = PropClassifier(**params)
-        clf.fit(X_train, y_train, eval_set=(X_val, y_val), feature_names=feature_cols)
+        clf.fit(X_train, y_train, eval_set=(X_val, y_val), feature_names=feature_cols,
+                sample_weight=fold_weights)
 
         # Calibrate if requested
         if calibrate:

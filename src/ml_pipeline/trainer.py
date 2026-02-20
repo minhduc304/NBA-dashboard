@@ -15,6 +15,8 @@ from datetime import datetime
 
 from .config import (
     DEFAULT_DB_PATH, DEFAULT_MODEL_DIR, DEFAULT_TEST_DAYS, DEFAULT_VAL_DAYS,
+    CLASSIFIER_RECENCY_HALF_LIFE, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT,
+    REGRESSOR_RECENCY_HALF_LIFE, RECENCY_MIN_WEIGHT,
     get_model_params,
 )
 
@@ -79,6 +81,26 @@ class ModelTrainer:
         self._classifier_features = None
         self._feature_selector = None
         self._checkpoint_dir = os.path.join(model_dir, 'checkpoints')
+
+    @staticmethod
+    def _compute_recency_weights(game_dates, half_life_days, min_weight=RECENCY_MIN_WEIGHT):
+        """
+        Compute exponential decay sample weights based on game recency.
+
+        Args:
+            game_dates: Series or array of game date strings
+            half_life_days: Days for weight to halve
+            min_weight: Floor weight so no sample is zeroed out
+
+        Returns:
+            numpy array of weights in [min_weight, 1.0]
+        """
+        dates = pd.to_datetime(game_dates)
+        max_date = dates.max()
+        days_ago = (max_date - dates).dt.days.values.astype(float)
+        decay_rate = np.log(2) / half_life_days
+        weights = np.exp(-decay_rate * days_ago)
+        return np.clip(weights, min_weight, 1.0)
 
     def _save_checkpoint(self, stage: str, data: Dict) -> str:
         """
@@ -218,12 +240,18 @@ class ModelTrainer:
             y_val_reg = reg_val_df['actual_value'].values
             y_test_reg = reg_test_df['actual_value'].values
 
+            # Compute recency weights for regressor training
+            reg_weights = self._compute_recency_weights(
+                reg_train_df['game_date'], REGRESSOR_RECENCY_HALF_LIFE
+            )
+
             # Train regressor with validation set for early stopping
             try:
                 self.regressor.fit(
                     X_train_reg, y_train_reg,
                     eval_set=(X_val_reg, y_val_reg),  # Validation for early stopping
                     feature_names=self._regressor_features,
+                    sample_weight=reg_weights,
                 )
             except Exception as e:
                 # Save checkpoint on failure
@@ -294,6 +322,14 @@ class ModelTrainer:
         y_val_clf = clf_val_df['hit_over'].values
         y_test_clf = clf_test_df['hit_over'].values
 
+        # Compute recency weights for classifier training (per-stat half-life)
+        clf_half_life = CLASSIFIER_RECENCY_HALF_LIFE.get(
+            self.stat_type, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT
+        )
+        clf_weights = self._compute_recency_weights(
+            clf_train_df['game_date'], clf_half_life
+        )
+
         # Feature selection: Train initial model, select important features, retrain
         use_feature_selection = (
             self.max_classifier_features is not None or
@@ -307,6 +343,7 @@ class ModelTrainer:
                 X_train_clf, y_train_clf,
                 eval_set=(X_val_clf, y_val_clf),
                 feature_names=self._classifier_features,
+                sample_weight=clf_weights,
             )
 
             # Apply feature selection
@@ -343,6 +380,7 @@ class ModelTrainer:
                 X_train_clf, y_train_clf,
                 eval_set=(X_val_clf, y_val_clf),  # Validation for early stopping
                 feature_names=self._classifier_features,
+                sample_weight=clf_weights,
             )
         except Exception as e:
             # Save checkpoint on failure

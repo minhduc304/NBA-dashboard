@@ -135,3 +135,14 @@ DEFAULT_TEST_DAYS = 7   # For final evaluation (test) - ~200+ samples
 # Calibration improves predicted probability reliability for bet sizing
 DEFAULT_CALIBRATE = True
 DEFAULT_CALIBRATION_METHOD = 'isotonic'  # 'isotonic' (flexible) or 'sigmoid' (Platt scaling)
+
+# Recency weighting: exponential decay so recent games count more
+# Per-stat half-lives tuned via CV grid search
+CLASSIFIER_RECENCY_HALF_LIFE: Dict[str, int] = {
+    'points': 14,       # points need longer memory — stable stat
+    'rebounds': 7,      # rebounds respond to short-term form/matchups
+    'assists': 30,      # assists are most stable, gentlest decay wins
+}
+CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT = 14   # fallback for stats not in the dict
+REGRESSOR_RECENCY_HALF_LIFE = 60    # days — gentler decay for 90k historical games
+RECENCY_MIN_WEIGHT = 0.1            # floor so no sample is zeroed out
