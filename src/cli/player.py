@@ -4,6 +4,8 @@ import click
 import time
 import sqlite3
 
+from src.api.retry import ThrottleDetector
+
 
 @click.group()
 @click.pass_context
@@ -158,6 +160,7 @@ def play_types(ctx):
     success = 0
     skipped = 0
     errors = 0
+    throttle = ThrottleDetector()
 
     for i, (player_id, player_name, stats_updated, pt_updated) in enumerate(players, 1):
         click.echo(f"[{i}/{total}] {player_name}...", nl=False)
@@ -173,12 +176,17 @@ def play_types(ctx):
             if result:
                 success += 1
                 click.echo(click.style(" OK", fg='green'))
+                throttle.record_success()
             else:
                 skipped += 1
                 click.echo(click.style(" Skipped", fg='yellow'))
         except Exception as e:
             errors += 1
             click.echo(click.style(f" Error: {e}", fg='red'))
+            wait = throttle.record_failure()
+            if wait:
+                click.echo(click.style(f"  Rate limited — cooling down {wait:.0f}s...", fg='cyan'))
+                time.sleep(wait)
 
         if i < total:
             time.sleep(delay)
@@ -239,6 +247,7 @@ def assist_zones(ctx, force):
     success = 0
     skipped = 0
     errors = 0
+    throttle = ThrottleDetector()
 
     for i, (player_id, player_name, stats_updated, zones_updated, total_games, completed_games) in enumerate(players, 1):
         click.echo(f"[{i}/{total}] {player_name}...", nl=False)
@@ -261,12 +270,17 @@ def assist_zones(ctx, force):
             if result:
                 success += 1
                 click.echo(click.style(" OK", fg='green'))
+                throttle.record_success()
             else:
                 skipped += 1
                 click.echo(click.style(" Skipped", fg='yellow'))
         except Exception as e:
             errors += 1
             click.echo(click.style(f" Error: {e}", fg='red'))
+            wait = throttle.record_failure()
+            if wait:
+                click.echo(click.style(f"  Rate limited — cooling down {wait:.0f}s...", fg='cyan'))
+                time.sleep(wait)
 
         if i < total:
             time.sleep(delay)
@@ -315,6 +329,7 @@ def shooting_zones(ctx, force):
     success = 0
     skipped = 0
     errors = 0
+    throttle = ThrottleDetector()
 
     for i, (player_id, player_name, stats_updated, zones_updated) in enumerate(players, 1):
         click.echo(f"[{i}/{total}] {player_name}...", nl=False)
@@ -330,12 +345,17 @@ def shooting_zones(ctx, force):
             if result.is_success:
                 success += 1
                 click.echo(click.style(f" OK ({len(result.data)} zones)", fg='green'))
+                throttle.record_success()
             else:
                 skipped += 1
                 click.echo(click.style(f" Skipped ({result.message})", fg='yellow'))
         except Exception as e:
             errors += 1
             click.echo(click.style(f" Error: {e}", fg='red'))
+            wait = throttle.record_failure()
+            if wait:
+                click.echo(click.style(f"  Rate limited — cooling down {wait:.0f}s...", fg='cyan'))
+                time.sleep(wait)
 
         if i < total:
             time.sleep(delay)

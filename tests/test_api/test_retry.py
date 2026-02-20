@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from src.api.retry import RetryStrategy, with_retry
+from src.api.retry import RetryStrategy, ThrottleDetector, with_retry
 
 
 # RetryStrategy._calculate_delay
@@ -173,3 +173,56 @@ class TestWithRetryDecorator:
             return f"{greeting}, {name}!"
 
         assert greet("World", greeting="Hi") == "Hi, World!"
+
+
+# ThrottleDetector
+
+class TestThrottleDetector:
+    def test_no_cooldown_below_threshold(self):
+        throttle = ThrottleDetector(threshold=3)
+        assert throttle.record_failure() is None
+        assert throttle.record_failure() is None
+
+    def test_cooldown_at_threshold(self):
+        throttle = ThrottleDetector(threshold=3, cooldown=60.0)
+        throttle.record_failure()
+        throttle.record_failure()
+        wait = throttle.record_failure()
+        assert wait == 60.0
+
+    def test_success_resets_counter(self):
+        throttle = ThrottleDetector(threshold=3, cooldown=60.0)
+        throttle.record_failure()
+        throttle.record_failure()
+        throttle.record_success()
+        # Should need 3 more failures after reset
+        assert throttle.record_failure() is None
+        assert throttle.record_failure() is None
+        wait = throttle.record_failure()
+        assert wait == 60.0
+
+    def test_escalation(self):
+        throttle = ThrottleDetector(threshold=2, cooldown=30.0, max_cooldown=300.0)
+        # First trigger: 30s
+        throttle.record_failure()
+        assert throttle.record_failure() == 30.0
+        # Second trigger: 60s
+        throttle.record_failure()
+        assert throttle.record_failure() == 60.0
+        # Third trigger: 90s
+        throttle.record_failure()
+        assert throttle.record_failure() == 90.0
+
+    def test_max_cooldown_cap(self):
+        throttle = ThrottleDetector(threshold=1, cooldown=100.0, max_cooldown=250.0)
+        assert throttle.record_failure() == 100.0
+        assert throttle.record_failure() == 200.0
+        assert throttle.record_failure() == 250.0  # Capped
+        assert throttle.record_failure() == 250.0  # Stays capped
+
+    def test_success_resets_escalation(self):
+        throttle = ThrottleDetector(threshold=1, cooldown=60.0)
+        assert throttle.record_failure() == 60.0   # escalation 1
+        assert throttle.record_failure() == 120.0  # escalation 2
+        throttle.record_success()
+        assert throttle.record_failure() == 60.0   # reset to escalation 1

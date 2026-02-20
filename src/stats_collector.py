@@ -13,7 +13,7 @@ from nba_api.stats.endpoints import commonplayerinfo, playergamelogs
 
 from .config import Config
 from .api.client import ProductionNBAApiClient
-from .api.retry import RetryStrategy
+from .api.retry import RetryStrategy, ThrottleDetector
 from .db.player import SQLitePlayerRepository
 from .db.zones import SQLiteZoneRepository, SQLiteTeamDefenseZoneRepository
 from .collectors import (
@@ -503,6 +503,7 @@ class NBAStatsCollector:
         updated = 0
         skipped = 0
         errors = 0
+        throttle = ThrottleDetector()
 
         for i, player in enumerate(players_to_update, 1):
             player_id = player['id'] if isinstance(player, dict) else player
@@ -514,15 +515,24 @@ class NBAStatsCollector:
                 if result.is_success:
                     updated += 1
                     logger.info("[%d/%d] ✓ %s - %s", i, total, player_name, result.message)
+                    throttle.record_success()
                 elif result.is_skipped:
                     skipped += 1
                     logger.debug("[%d/%d] - %s skipped", i, total, player_name)
                 else:
                     errors += 1
                     logger.warning("[%d/%d] ✗ %s - %s", i, total, player_name, result.message)
+                    wait = throttle.record_failure()
+                    if wait:
+                        logger.info("Rate limited — cooling down %.0fs...", wait)
+                        time.sleep(wait)
             except Exception as e:
                 logger.error("[%d/%d] ✗ %s - Error: %s", i, total, player_name, e)
                 errors += 1
+                wait = throttle.record_failure()
+                if wait:
+                    logger.info("Rate limited — cooling down %.0fs...", wait)
+                    time.sleep(wait)
 
             if i < total:
                 time.sleep(delay)

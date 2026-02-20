@@ -1,8 +1,11 @@
 """Retry Strategy - Configurable retry logic for API calls."""
 
+import logging
 import time
 from functools import wraps
 from typing import Callable, TypeVar, Optional, List, Type
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
@@ -97,3 +100,64 @@ def with_retry(
             return strategy.execute(lambda: func(*args, **kwargs))
         return wrapper
     return decorator
+
+
+class ThrottleDetector:
+    """Detects API throttling via consecutive failures and applies cooldown.
+
+    Usage in collection loops::
+
+        throttle = ThrottleDetector()
+        for player in players:
+            try:
+                collect(player)
+                throttle.record_success()
+            except Exception:
+                wait = throttle.record_failure()
+                if wait:
+                    time.sleep(wait)
+    """
+
+    def __init__(
+        self,
+        threshold: int = 3,
+        cooldown: float = 60.0,
+        max_cooldown: float = 300.0,
+    ):
+        """
+        Args:
+            threshold: Consecutive failures before triggering cooldown
+            cooldown: Base cooldown in seconds (escalates on repeated triggers)
+            max_cooldown: Maximum cooldown in seconds
+        """
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self.max_cooldown = max_cooldown
+        self._consecutive_failures = 0
+        self._escalation = 0
+
+    def record_success(self) -> None:
+        """Record a successful request. Resets failure tracking."""
+        self._consecutive_failures = 0
+        self._escalation = 0
+
+    def record_failure(self) -> Optional[float]:
+        """Record a failed request.
+
+        Returns:
+            Seconds to wait if cooldown triggered, None otherwise.
+        """
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.threshold:
+            self._escalation += 1
+            wait = min(self.cooldown * self._escalation, self.max_cooldown)
+            self._consecutive_failures = 0
+            logger.warning(
+                "Throttle detected (%d consecutive failures). "
+                "Cooling down for %.0fs (escalation %d)",
+                self.threshold,
+                wait,
+                self._escalation,
+            )
+            return wait
+        return None
