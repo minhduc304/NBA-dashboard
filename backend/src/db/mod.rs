@@ -624,6 +624,41 @@ pub async fn get_team_defensive_play_type_ranks(pool: &SqlitePool) -> Result<std
     Ok(ranks)
 }
 
+/// Get all prop lines from odds_api_props for the screener
+pub async fn get_screener_lines(
+    pool: &SqlitePool,
+    game_date: &str,
+    stat_type: Option<&str>,
+) -> Result<Vec<crate::models::ScreenerLineRow>, sqlx::Error> {
+    match stat_type {
+        Some(st) => {
+            sqlx::query_as::<_, crate::models::ScreenerLineRow>(
+                r#"SELECT player_name, stat_type, game_date, home_team, away_team,
+                          sportsbook, line, over_odds, under_odds, scraped_at
+                   FROM odds_api_props
+                   WHERE game_date = ? AND stat_type = ?
+                   ORDER BY player_name, stat_type, sportsbook"#
+            )
+            .bind(game_date)
+            .bind(st)
+            .fetch_all(pool)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, crate::models::ScreenerLineRow>(
+                r#"SELECT player_name, stat_type, game_date, home_team, away_team,
+                          sportsbook, line, over_odds, under_odds, scraped_at
+                   FROM odds_api_props
+                   WHERE game_date = ?
+                   ORDER BY player_name, stat_type, sportsbook"#
+            )
+            .bind(game_date)
+            .fetch_all(pool)
+            .await
+        }
+    }
+}
+
 /// Get DNP (Did Not Play) players for a specific game and team
 /// Returns top 2 players who were on the roster but didn't play, sorted by season average
 pub async fn get_dnp_players_for_game(

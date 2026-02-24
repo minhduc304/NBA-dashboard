@@ -80,6 +80,9 @@ async fn main() {
         .route("/api/teams/{id}/defensive-zones", get(routes::zones::get_team_defensive_zones))
         .route("/api/teams/{id}/defensive-play-types", get(routes::play_types::get_team_defensive_play_types))
 
+        // Screener endpoints
+        .route("/api/screener/lines", get(routes::line_shopping::get_screener_lines))
+
         // Schedule endpoints
         .route("/api/schedule", get(routes::schedule::get_schedule))
         .route("/api/schedule/today", get(routes::schedule::get_todays_games))
