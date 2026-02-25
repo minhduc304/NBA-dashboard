@@ -1,10 +1,15 @@
 """Machine learning pipeline commands."""
 
 import click
+import logging
 import os
+import sqlite3
 import sys
 import traceback
 from datetime import datetime, timedelta
+from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Pipeline steps configuration
@@ -842,6 +847,42 @@ def _get_api_health(step_results: dict):
         return None
 
 
+def _check_game_log_coverage(db_path: str, step_results: dict) -> Optional[str]:
+    """Check if game log insert count is suspiciously low vs schedule.
+
+    Returns a warning message string if coverage is low, None otherwise.
+    """
+    logs_result = step_results.get('logs')
+    if not isinstance(logs_result, dict):
+        return None
+
+    inserted = logs_result.get('inserted', 0)
+
+    # Query yesterday's scheduled games
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM schedule WHERE game_date = ?", (yesterday,)
+    )
+    scheduled_games = cursor.fetchone()[0]
+    conn.close()
+
+    if scheduled_games == 0:
+        return None  # No games yesterday (off-day), nothing to warn about
+
+    # ~13 players per team, 2 teams per game = ~26 rows per game
+    expected_min_rows = scheduled_games * 20  # conservative floor
+
+    if inserted < expected_min_rows:
+        return (
+            f"Game log coverage low: {inserted} rows inserted, "
+            f"but {scheduled_games} games were scheduled on {yesterday} "
+            f"(expected ~{scheduled_games * 26}+ rows)"
+        )
+    return None
+
+
 def _finalize_and_notify(pipeline_result, db_path: str, step_results: dict):
     """Finalize pipeline result and send notifications."""
     try:
@@ -872,6 +913,13 @@ def _finalize_and_notify(pipeline_result, db_path: str, step_results: dict):
                 credits = pipeline_result.api_health.odds_api_credits_remaining
                 if credits is not None and credits < config.odds_api_quota_warning_threshold:
                     notifier.notify_quota_warning(credits)
+
+            # Check for low game log coverage
+            if db_path:
+                warning = _check_game_log_coverage(db_path, step_results)
+                if warning:
+                    logger.warning(warning)
+                    notifier.send_simple(f":warning: {warning}", is_error=False)
 
         click.echo(f"\nNotification sent (status: {pipeline_result.status.value})")
 

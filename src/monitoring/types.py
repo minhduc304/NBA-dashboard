@@ -178,9 +178,8 @@ def format_step_result(name: str, result: Dict[str, Any]) -> str:
         return f"{updated} updated"
 
     elif name == "logs":
-        # Result can be a dict with 'new' or just an int
         if isinstance(result, dict):
-            new_games = result.get("new", result.get("games", 0))
+            new_games = result.get("inserted", result.get("new", result.get("games", 0)))
         else:
             new_games = result
         return f"{new_games} new games"
