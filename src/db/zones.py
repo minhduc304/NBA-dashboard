@@ -366,15 +366,17 @@ class SQLiteTeamDefenseZoneRepository(TeamDefenseZoneRepository):
                 "DELETE FROM team_defensive_zones WHERE team_id = ? AND season = ?",
                 (defense.team_id, defense.season)
             )
-            # Insert new zones
+            # Insert new zones with computed percentages
             for zone in defense.zones:
+                opp_fg_pct = (zone.opp_fgm / zone.opp_fga * 100) if zone.opp_fga > 0 else 0.0
                 conn.execute("""
                     INSERT INTO team_defensive_zones
-                    (team_id, season, zone_name, zone_area, zone_range, opp_fgm, opp_fga)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (team_id, season, zone_name, zone_area, zone_range, opp_fgm, opp_fga, opp_fg_pct, opp_efg_pct)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     defense.team_id, defense.season, zone.zone_name,
-                    zone.zone_area, zone.zone_range, zone.opp_fgm, zone.opp_fga
+                    zone.zone_area, zone.zone_range, zone.opp_fgm, zone.opp_fga,
+                    opp_fg_pct, opp_fg_pct
                 ))
             conn.commit()
         finally:

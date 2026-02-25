@@ -121,7 +121,10 @@ pub async fn get_assist_zones_with_team_defense(
 
     // Get all team defensive zones to calculate rankings
     let all_team_zones: Vec<(i64, String, f32)> = sqlx::query_as(
-        r#"SELECT team_id, zone_name, opp_fg_pct FROM team_defensive_zones ORDER BY zone_name, opp_fg_pct"#
+        r#"SELECT team_id, zone_name,
+                  CASE WHEN opp_fga > 0 THEN (opp_fgm / opp_fga) * 100.0 ELSE 0.0 END AS opp_fg_pct
+           FROM team_defensive_zones
+           ORDER BY zone_name, opp_fg_pct"#
     )
     .fetch_all(pool)
     .await?;
@@ -182,7 +185,11 @@ pub async fn get_player_playtypes(pool: &SqlitePool, player_id: i64) -> Result<V
 // Team defensive queries
 pub async fn get_defensive_zones(pool: &SqlitePool, team_id: i64) -> Result<Vec<TeamDefensiveZones>, sqlx::Error> {
     sqlx::query_as::<_, TeamDefensiveZones>(
-        r#"SELECT * FROM team_defensive_zones WHERE team_id = ? ORDER BY zone_name"#
+        r#"SELECT team_id, season, zone_name, opp_fgm, opp_fga,
+                  CASE WHEN opp_fga > 0 THEN (opp_fgm / opp_fga) * 100.0 ELSE 0.0 END AS opp_fg_pct,
+                  CASE WHEN opp_fga > 0 THEN (opp_fgm / opp_fga) * 100.0 ELSE 0.0 END AS opp_efg_pct,
+                  last_updated
+           FROM team_defensive_zones WHERE team_id = ? ORDER BY zone_name"#
     )
     .bind(team_id)
     .fetch_all(pool)
@@ -241,7 +248,10 @@ pub async fn get_shooting_zone_matchup(
         opp_fg_pct: f32,
     }
     let all_def_zones: Vec<ZoneDefense> = sqlx::query_as(
-        r#"SELECT team_id, zone_name, opp_fg_pct FROM team_defensive_zones ORDER BY zone_name, opp_fg_pct"#
+        r#"SELECT team_id, zone_name,
+                  CASE WHEN opp_fga > 0 THEN (opp_fgm / opp_fga) * 100.0 ELSE 0.0 END AS opp_fg_pct
+           FROM team_defensive_zones
+           ORDER BY zone_name, opp_fg_pct"#
     )
     .fetch_all(pool)
     .await?;
@@ -292,9 +302,9 @@ pub async fn get_shooting_zone_matchup(
         let player_fga = player_zone.map(|z| z.fga).unwrap_or(0.0);
         let player_fgm = player_zone.map(|z| z.fgm).unwrap_or(0.0);
 
-        // Opponent FG% is stored as decimal (0.35 = 35%), convert to percentage
-        let opp_fg_pct = opp_zone.map(|z| z.opp_fg_pct * 100.0).unwrap_or(0.0);
-        let league_avg_pct = league_avg * 100.0;
+        // opp_fg_pct is already computed as percentage (e.g., 45.3 = 45.3%) in SQL
+        let opp_fg_pct = opp_zone.map(|z| z.opp_fg_pct).unwrap_or(0.0);
+        let league_avg_pct = league_avg;
 
         // Calculate player's volume percentage
         let player_volume_pct = if total_fga > 0.0 {
