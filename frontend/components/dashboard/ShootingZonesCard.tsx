@@ -58,11 +58,11 @@ export function ShootingZonesCard({
   const hasData = matchupData?.zones.some((z) => z.hasData) ?? false;
 
   return (
-    <div className="p-6 rounded-xl bg-card border border-border">
+    <div className="card-surface rounded-lg p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Shooting Zones</h3>
-        <span className="text-sm text-muted-foreground">vs {opponentName}</span>
+        <h3 className="font-display text-sm font-semibold text-foreground">Shooting Zones</h3>
+        <span className="label-meta">vs {opponentName}</span>
       </div>
 
       {/* Content */}
@@ -88,21 +88,21 @@ export function ShootingZonesCard({
               <div className="flex items-center gap-1.5">
                 <div
                   className="w-3 h-3 rounded-sm"
-                  style={{ backgroundColor: 'oklch(0.60 0.22 25)' }}
+                  style={{ backgroundColor: 'var(--destructive)' }}
                 />
                 <span className="text-muted-foreground">Below Avg</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <div
                   className="w-3 h-3 rounded-sm"
-                  style={{ backgroundColor: 'oklch(0.80 0.18 85)' }}
+                  style={{ backgroundColor: 'var(--accent)' }}
                 />
                 <span className="text-muted-foreground">League Avg</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <div
                   className="w-3 h-3 rounded-sm"
-                  style={{ backgroundColor: 'oklch(0.65 0.20 145)' }}
+                  style={{ backgroundColor: 'var(--success)' }}
                 />
                 <span className="text-muted-foreground">Above Avg</span>
               </div>

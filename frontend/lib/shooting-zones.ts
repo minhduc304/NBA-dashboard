@@ -80,9 +80,9 @@ export function getZoneColor(advantage: number, hasData: boolean = true): string
  * Get text color for advantage display
  */
 export function getAdvantageTextColor(advantage: number): string {
-  if (advantage > 3) return 'text-green-400';
-  if (advantage < -3) return 'text-red-400';
-  return 'text-yellow-400';
+  if (advantage > 3) return 'text-success';
+  if (advantage < -3) return 'text-destructive';
+  return 'text-accent';
 }
 
 /**

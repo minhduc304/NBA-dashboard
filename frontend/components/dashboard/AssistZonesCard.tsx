@@ -58,11 +58,11 @@ export function AssistZonesCard({
   const hasData = data && data.zones.length > 0 && data.zones.some((z) => z.hasData);
 
   return (
-    <div className="p-6 rounded-xl bg-card border border-border">
+    <div className="card-surface rounded-lg p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Assist Zones</h3>
-        <span className="text-sm text-muted-foreground">vs {opponentName}</span>
+        <h3 className="font-display text-sm font-semibold text-foreground">Assist Zones</h3>
+        <span className="label-meta">vs {opponentName}</span>
       </div>
 
       {/* Content */}
@@ -94,14 +94,14 @@ export function AssistZonesCard({
                 <div className="flex items-center gap-1.5">
                   <div
                     className="w-3 h-3 rounded-sm"
-                    style={{ backgroundColor: 'oklch(0.85 0.05 265)' }}
+                    style={{ backgroundColor: 'var(--muted)' }}
                   />
                   <span className="text-muted-foreground">Low %</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div
                     className="w-3 h-3 rounded-sm"
-                    style={{ backgroundColor: 'oklch(0.50 0.20 265)' }}
+                    style={{ backgroundColor: 'var(--primary)' }}
                   />
                   <span className="text-muted-foreground">High %</span>
                 </div>
@@ -115,21 +115,21 @@ export function AssistZonesCard({
                 <div className="flex items-center gap-1.5">
                   <div
                     className="w-3 h-3 rounded-sm border-2"
-                    style={{ borderColor: 'oklch(0.65 0.20 145)' }}
+                    style={{ borderColor: 'var(--success)' }}
                   />
                   <span className="text-muted-foreground">Weak DEF</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div
                     className="w-3 h-3 rounded-sm border-2"
-                    style={{ borderColor: 'oklch(0.80 0.18 85)' }}
+                    style={{ borderColor: 'var(--accent)' }}
                   />
                   <span className="text-muted-foreground">Avg DEF</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div
                     className="w-3 h-3 rounded-sm border-2"
-                    style={{ borderColor: 'oklch(0.60 0.22 25)' }}
+                    style={{ borderColor: 'var(--destructive)' }}
                   />
                   <span className="text-muted-foreground">Strong DEF</span>
                 </div>
@@ -140,7 +140,7 @@ export function AssistZonesCard({
           {/* Top Zones Summary */}
           {data && (
             <div className="pt-4 border-t border-border">
-              <h4 className="text-sm font-medium mb-2">Top Assist Zones</h4>
+              <h4 className="label-meta mb-2">Top Assist Zones</h4>
               <div className="space-y-1">
                 {sortZonesByAssists(data.zones)
                   .filter((z) => z.playerAssists > 0)

@@ -82,9 +82,9 @@ export function getAssistHeatColor(percentage: number, hasData: boolean = true):
  */
 export function getDefensiveRankTextClass(rank: number): string {
   if (rank === 0) return 'text-muted-foreground';
-  if (rank >= 21) return 'text-green-400';
-  if (rank >= 11) return 'text-yellow-400';
-  return 'text-red-400';
+  if (rank >= 21) return 'text-success';
+  if (rank >= 11) return 'text-accent';
+  return 'text-destructive';
 }
 
 /**

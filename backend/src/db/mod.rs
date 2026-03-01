@@ -634,39 +634,89 @@ pub async fn get_team_defensive_play_type_ranks(pool: &SqlitePool) -> Result<std
     Ok(ranks)
 }
 
-/// Get all prop lines from odds_api_props for the screener
-pub async fn get_screener_lines(
+/// Ensure indexes exist for fast top-picks joins
+pub async fn ensure_top_picks_indexes(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_odds_props_date_player_lower \
+         ON odds_api_props(game_date, LOWER(player_name), stat_type)"
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_all_props_ud_date \
+         ON all_props(source, choice, DATE(scheduled_at), LOWER(full_name), stat_name)"
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get Underdog even-odds lines joined against individual sharp book rows.
+/// Filters odds_api_props to only include matchups on today's actual schedule
+/// (avoids UTC vs ET date mismatch for late-night games).
+pub async fn get_top_pick_candidates(
     pool: &SqlitePool,
     game_date: &str,
-    stat_type: Option<&str>,
-) -> Result<Vec<crate::models::ScreenerLineRow>, sqlx::Error> {
-    match stat_type {
-        Some(st) => {
-            sqlx::query_as::<_, crate::models::ScreenerLineRow>(
-                r#"SELECT player_name, stat_type, game_date, home_team, away_team,
-                          sportsbook, line, over_odds, under_odds, scraped_at
-                   FROM odds_api_props
-                   WHERE game_date = ? AND stat_type = ?
-                   ORDER BY player_name, stat_type, sportsbook"#
+) -> Result<Vec<crate::models::TopPickRow>, sqlx::Error> {
+    sqlx::query_as::<_, crate::models::TopPickRow>(
+        r#"
+        WITH today_matchups AS (
+            SELECT home_team_name, away_team_name, game_time
+            FROM schedule
+            WHERE game_date = ?
+        ),
+        ud_lines AS (
+            SELECT
+                player_name_lower,
+                stat_name,
+                ud_line,
+                ud_odds
+            FROM (
+                SELECT
+                    LOWER(full_name) AS player_name_lower,
+                    stat_name,
+                    stat_value AS ud_line,
+                    american_odds AS ud_odds,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY LOWER(full_name), stat_name
+                        ORDER BY ABS(COALESCE(american_odds, -110) + 110)
+                    ) AS rn
+                FROM all_props
+                WHERE source = 'underdog'
+                  AND choice = 'over'
+                  AND DATE(scheduled_at) = ?
+                  AND (american_odds IS NULL OR (american_odds >= -125 AND american_odds <= -100))
             )
-            .bind(game_date)
-            .bind(st)
-            .fetch_all(pool)
-            .await
-        }
-        None => {
-            sqlx::query_as::<_, crate::models::ScreenerLineRow>(
-                r#"SELECT player_name, stat_type, game_date, home_team, away_team,
-                          sportsbook, line, over_odds, under_odds, scraped_at
-                   FROM odds_api_props
-                   WHERE game_date = ?
-                   ORDER BY player_name, stat_type, sportsbook"#
-            )
-            .bind(game_date)
-            .fetch_all(pool)
-            .await
-        }
-    }
+            WHERE rn = 1
+        )
+        SELECT
+            u.player_name_lower AS player_name,
+            s.stat_type,
+            u.ud_line,
+            u.ud_odds,
+            s.sportsbook,
+            s.line AS book_line,
+            s.over_odds,
+            s.under_odds,
+            s.home_team,
+            s.away_team,
+            s.game_date,
+            tm.game_time
+        FROM odds_api_props s
+        INNER JOIN ud_lines u
+            ON LOWER(s.player_name) = u.player_name_lower
+           AND s.stat_type = u.stat_name
+        INNER JOIN today_matchups tm
+            ON s.home_team = tm.home_team_name
+           AND s.away_team = tm.away_team_name
+        WHERE s.sportsbook IN ('betmgm', 'draftkings', 'fanduel')
+        ORDER BY u.player_name_lower, s.stat_type, s.line
+        "#
+    )
+    .bind(game_date)
+    .bind(game_date)
+    .fetch_all(pool)
+    .await
 }
 
 /// Get DNP (Did Not Play) players for a specific game and team

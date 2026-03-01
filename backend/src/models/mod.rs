@@ -400,62 +400,60 @@ pub struct PlayTypeMatchupResponse {
     pub matchups: Vec<PlayTypeMatchup>,
 }
 
-// ── Line Shopping Screener ──
+// ── Top Picks (Underdog vs Sharp Books) ──
 
-/// Raw row from odds_api_props (one per player/stat/sportsbook)
+/// Raw row: one per sharp-book × Underdog line match
 #[derive(Debug, sqlx::FromRow)]
-pub struct ScreenerLineRow {
+pub struct TopPickRow {
     pub player_name: String,
     pub stat_type: String,
-    pub game_date: String,
+    pub ud_line: f64,
+    pub ud_odds: Option<i32>,
+    pub sportsbook: String,
+    pub book_line: f64,
+    pub over_odds: Option<i32>,
+    pub under_odds: Option<i32>,
     pub home_team: String,
     pub away_team: String,
+    pub game_date: String,
+    pub game_time: Option<String>,
+}
+
+/// One sharp book's line + odds for the expanded view
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SharpBookLine {
     pub sportsbook: String,
     pub line: f64,
     pub over_odds: Option<i32>,
     pub under_odds: Option<i32>,
-    pub scraped_at: Option<String>,
 }
 
-/// Per-book line and odds for a single prop
+/// Computed top pick for the API response
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BookLine {
-    pub sportsbook: String,
-    pub line: f64,
-    pub over_odds: Option<i32>,
-    pub under_odds: Option<i32>,
-}
-
-/// Consensus stats computed across all books for a (player, stat)
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConsensusInfo {
-    pub avg_line: f64,
-    pub min_line: f64,
-    pub max_line: f64,
-    pub num_books: usize,
-}
-
-/// One prop with its consensus and per-book breakdowns
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScreenerProp {
+pub struct TopPick {
     pub player_name: String,
     pub stat_type: String,
-    pub game_date: String,
+    pub direction: String,
+    pub ud_line: f64,
+    pub ud_odds: Option<i32>,
+    pub ud_implied_prob: f64,
+    pub edge_pct: f64,
+    pub best_book: String,
+    pub best_book_devigged_prob: f64,
+    pub books: Vec<SharpBookLine>,
     pub home_team: String,
     pub away_team: String,
-    pub consensus: ConsensusInfo,
-    pub books: Vec<BookLine>,
+    pub game_date: String,
 }
 
-/// Top-level screener response
+/// Top-level response for /api/screener/top-picks
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScreenerResponse {
-    pub props: Vec<ScreenerProp>,
-    pub last_scraped: Option<String>,
+pub struct TopPicksResponse {
+    pub picks: Vec<TopPick>,
+    pub last_updated: Option<String>,
 }
 
 /// Team pace and rating stats

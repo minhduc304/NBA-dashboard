@@ -34,7 +34,12 @@ async fn main() {
         .expect("Failed to connect to database");
     
     tracing::info!("Database connection established.");
-    
+
+    // Ensure indexes for fast top-picks queries
+    db::ensure_top_picks_indexes(&pool)
+        .await
+        .expect("Failed to create top-picks indexes");
+
     let host: Ipv4Addr = std::env::var("HOST")
         .expect("HOST is set in .env")
         .parse()
@@ -81,7 +86,7 @@ async fn main() {
         .route("/api/teams/{id}/defensive-play-types", get(routes::play_types::get_team_defensive_play_types))
 
         // Screener endpoints
-        .route("/api/screener/lines", get(routes::line_shopping::get_screener_lines))
+        .route("/api/screener/top-picks", get(routes::line_shopping::get_top_picks))
 
         // Schedule endpoints
         .route("/api/schedule", get(routes::schedule::get_schedule))

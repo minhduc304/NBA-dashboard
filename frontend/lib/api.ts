@@ -435,6 +435,55 @@ export async function fetchAssistZoneMatchup(
   return response.json();
 }
 
+// ── Top Picks (Underdog vs Sharp Books) ──
+
+export interface ApiSharpBookLine {
+  sportsbook: string;
+  line: number;
+  overOdds: number | null;
+  underOdds: number | null;
+}
+
+export interface ApiTopPick {
+  playerName: string;
+  statType: string;
+  direction: string;
+  udLine: number;
+  udOdds: number | null;
+  udImpliedProb: number;
+  edgePct: number;
+  bestBook: string;
+  bestBookDeviggedProb: number;
+  books: ApiSharpBookLine[];
+  homeTeam: string;
+  awayTeam: string;
+  gameDate: string;
+}
+
+export interface ApiTopPicksResponse {
+  picks: ApiTopPick[];
+  lastUpdated: string | null;
+}
+
+/**
+ * Fetch top +EV picks (DFS lines vs sharp consensus)
+ */
+export async function fetchTopPicks(
+  gameDate?: string,
+): Promise<ApiTopPicksResponse> {
+  const params = new URLSearchParams();
+  if (gameDate) params.append('game_date', gameDate);
+  const qs = params.toString();
+  const url = `${API_BASE_URL}/api/screener/top-picks${qs ? '?' + qs : ''}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch top picks: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
 // Upcoming matchup context for tooltip
 export interface ApiUpcomingMatchupContext {
   opponentName: string;

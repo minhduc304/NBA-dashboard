@@ -6,6 +6,7 @@ import {
   Bar,
   XAxis,
   YAxis,
+  CartesianGrid,
   ReferenceLine,
   Cell,
   ResponsiveContainer,
@@ -33,10 +34,10 @@ function RankBadge({ rank, label }: { rank: number | null | undefined; label: st
 
   // Color based on rank: 1-10 = green (good matchup), 11-20 = yellow, 21-30 = red (bad matchup)
   const colorClass = rank <= 10
-    ? 'text-green-400'
+    ? 'text-success'
     : rank <= 20
-    ? 'text-amber-400'
-    : 'text-red-400';
+    ? 'text-accent'
+    : 'text-destructive';
 
   return (
     <div className="flex justify-between text-xs">
@@ -164,7 +165,7 @@ function CustomTooltip({ active, payload, lineValue, statCategory }: CustomToolt
           <TeamLogo team={data.opponent} size={18} />
         </div>
         {marginDisplay && (
-          <span className={`text-xs font-semibold ${data.wl === 'W' ? 'text-green-500' : 'text-red-500'}`}>
+          <span className={`text-xs font-semibold ${data.wl === 'W' ? 'text-success' : 'text-destructive'}`}>
             {marginDisplay}
           </span>
         )}
@@ -181,8 +182,8 @@ function CustomTooltip({ active, payload, lineValue, statCategory }: CustomToolt
       <div className="flex items-center gap-2 mb-2">
         <span className="text-2xl font-bold font-mono">{data.value}</span>
         <span
-          className={`text-xs font-semibold px-2 py-0.5 rounded ${
-            isOver ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'
+          className={`text-xs font-mono font-semibold px-2 py-0.5 rounded-sm ${
+            isOver ? 'bg-success/15 text-success' : 'bg-destructive/15 text-destructive'
           }`}
         >
           {isOver ? 'OVER' : 'UNDER'}
@@ -229,7 +230,7 @@ function CustomTooltip({ active, payload, lineValue, statCategory }: CustomToolt
                 <span className="text-muted-foreground">
                   {dnp.playerName}
                 </span>
-                <span className="font-mono font-semibold text-amber-500">
+                <span className="font-mono font-semibold text-accent">
                   {dnp.seasonAvg.toFixed(1)} avg
                 </span>
               </div>
@@ -275,8 +276,8 @@ function CustomXAxisTick({ x, y, payload, chartData }: CustomXAxisTickProps) {
         />
       ) : (
         <>
-          <circle cx={0} cy={18} r={16} fill={NBA_TEAMS[dataPoint.opponent]?.color || '#666'} />
-          <text x={0} y={22} textAnchor="middle" fill="white" fontSize={10} fontWeight="bold">
+          <circle cx={0} cy={18} r={16} fill={NBA_TEAMS[dataPoint.opponent]?.color || 'var(--muted-foreground)'} />
+          <text x={0} y={22} textAnchor="middle" fill="var(--foreground)" fontSize={10} fontWeight="bold">
             {dataPoint.opponent}
           </text>
         </>
@@ -286,7 +287,7 @@ function CustomXAxisTick({ x, y, payload, chartData }: CustomXAxisTickProps) {
         x={0}
         y={46}
         textAnchor="middle"
-        fill="oklch(0.55 0.02 250)"
+        fill="var(--muted-foreground)"
         fontSize={9}
       >
         {month}
@@ -296,7 +297,7 @@ function CustomXAxisTick({ x, y, payload, chartData }: CustomXAxisTickProps) {
         x={0}
         y={58}
         textAnchor="middle"
-        fill="oklch(0.65 0.02 250)"
+        fill="var(--muted-foreground)"
         fontSize={11}
         fontWeight="500"
       >
@@ -541,16 +542,22 @@ export function StatsChart({ data, initialLineValue = 30.5, onLineChange, statCa
             domain={[0, yAxisMax]}
             axisLine={false}
             tickLine={false}
-            tick={{ fill: 'oklch(0.65 0.02 250)', fontSize: 12 }}
+            tick={{ fill: 'var(--muted-foreground)', fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}
             tickFormatter={(value) => value.toString()}
             allowDataOverflow={false}
+          />
+          <CartesianGrid
+            horizontal={true}
+            vertical={false}
+            stroke="var(--border)"
+            strokeOpacity={0.4}
           />
           <Tooltip content={<CustomTooltip lineValue={lineValue} statCategory={statCategory} />} cursor={false} />
 
           {/* Draggable Reference Line - clamped to valid range */}
           <ReferenceLine
             y={Math.max(0.5, Math.min(yAxisMax - 0.5, lineValue))}
-            stroke="oklch(0.80 0.18 85)"
+            stroke="var(--accent)"
             strokeWidth={3}
             strokeDasharray="8 4"
             style={{ cursor: 'ns-resize' }}
@@ -562,8 +569,8 @@ export function StatsChart({ data, initialLineValue = 30.5, onLineChange, statCa
                 return (
                   <Cell
                     key={`cell-${index}`}
-                    fill="transparent"
-                    stroke="oklch(0.65 0.02 250)"
+                    fill="var(--muted)"
+                    stroke="var(--border)"
                     strokeWidth={2}
                     strokeDasharray="4 4"
                   />
@@ -572,7 +579,7 @@ export function StatsChart({ data, initialLineValue = 30.5, onLineChange, statCa
               return (
                 <Cell
                   key={`cell-${index}`}
-                  fill={entry.isOver ? 'oklch(0.75 0.20 145)' : 'oklch(0.60 0.22 25)'}
+                  fill={entry.isOver ? 'color-mix(in oklch, var(--success) 65%, transparent)' : 'color-mix(in oklch, var(--destructive) 65%, transparent)'}
                 />
               );
             })}
@@ -612,8 +619,8 @@ export function StatsChart({ data, initialLineValue = 30.5, onLineChange, statCa
               onMouseDown={handleMouseDown}
               onTouchStart={handleMouseDown}
             >
-              <div className="px-3 py-1.5 rounded-lg bg-amber-400 text-amber-950 text-sm font-bold font-mono shadow-lg hover:bg-amber-300 transition-colors flex items-center gap-1.5">
-                <span className="text-xs opacity-70">≡</span>
+              <div className="px-2 py-0.5 rounded-sm bg-accent/85 text-accent-foreground text-xs font-bold font-mono shadow-sm duration-150 flex items-center gap-1">
+                <span className="text-[10px] opacity-60">≡</span>
                 {safeLineValue}
               </div>
             </div>

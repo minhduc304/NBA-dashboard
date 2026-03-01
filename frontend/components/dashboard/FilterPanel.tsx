@@ -45,16 +45,16 @@ function ToggleGroup<T extends string>({
   options: { value: T; label: string }[];
 }) {
   return (
-    <div className="flex gap-1 p-1 rounded-lg bg-secondary/50">
+    <div className="flex gap-1 p-1 rounded-md bg-muted">
       {options.map((option) => (
         <button
           key={option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200',
+            'flex-1 px-3 py-1.5 text-xs font-medium rounded-sm duration-150 ease-out',
             value === option.value
-              ? 'bg-primary text-primary-foreground'
-              : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
+              ? 'bg-secondary text-foreground'
+              : 'text-muted-foreground hover:text-foreground'
           )}
         >
           {option.label}
@@ -135,7 +135,7 @@ export function FilterPanel({
         {/* Season Filter */}
         {seasonOptions.length > 1 && (
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <label className="label-meta">
               Season
             </label>
             <ToggleGroup
@@ -148,7 +148,7 @@ export function FilterPanel({
 
         {/* Location Filter */}
         <div className="space-y-2">
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+          <label className="label-meta">
             Location
           </label>
           <ToggleGroup
@@ -164,7 +164,7 @@ export function FilterPanel({
 
         {/* Result Filter */}
         <div className="space-y-2">
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+          <label className="label-meta">
             Result
           </label>
           <ToggleGroup
@@ -181,7 +181,7 @@ export function FilterPanel({
         {/* Opponent Filter */}
         {availableOpponents.length > 0 && (
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <label className="label-meta">
               Opponent (H2H)
             </label>
             <Select
@@ -190,7 +190,7 @@ export function FilterPanel({
                 updateFilter('opponentAbbr', value === 'all' ? null : value)
               }
             >
-              <SelectTrigger className="h-9 bg-secondary/50 border-0">
+              <SelectTrigger className="h-8 bg-secondary border-border text-sm">
                 <SelectValue placeholder="All opponents" />
               </SelectTrigger>
               <SelectContent>

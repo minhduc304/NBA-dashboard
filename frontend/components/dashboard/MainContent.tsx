@@ -444,7 +444,7 @@ export function MainContent({ player }: MainContentProps) {
 
   if (!player || !stats) {
     return (
-      <main className="lg:ml-[var(--sidebar-width)] pt-14 min-h-screen bg-background flex items-center justify-center">
+      <main className="lg:ml-[var(--sidebar-width)] pt-12 min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">
           <div className="text-6xl">🏀</div>
           <h2 className="text-xl font-semibold text-muted-foreground">Select a player</h2>
@@ -457,12 +457,12 @@ export function MainContent({ player }: MainContentProps) {
   }
 
   return (
-    <main className="lg:ml-[var(--sidebar-width)] pt-14 min-h-screen bg-background">
-      <div className="p-4 lg:p-6 space-y-4 lg:space-y-6">
-        {/* Stat Category Tabs - Only show categories with available props */}
-        <div className="relative">
+    <main className="lg:ml-[var(--sidebar-width)] pt-12 min-h-screen bg-background">
+      <div className="p-4 lg:p-5 space-y-4">
+        {/* Stat Category Tabs */}
+        <div className="relative border-b border-border">
           <ScrollArea className="w-full">
-            <div className="flex gap-1 pb-2">
+            <div className="flex gap-4">
               {isLoadingProps ? (
                 <div className="px-4 py-2 text-sm text-muted-foreground">Loading props...</div>
               ) : availableStatCategories.length === 0 ? (
@@ -473,10 +473,10 @@ export function MainContent({ player }: MainContentProps) {
                     key={stat}
                     onClick={() => setActiveStat(stat as StatCategory)}
                     className={cn(
-                      'px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all duration-200',
+                      'px-1 pb-2 pt-2 text-sm font-sans whitespace-nowrap border-b-2 duration-150 ease-out -mb-px',
                       activeStat === stat
-                        ? 'bg-secondary text-foreground border-b-2 border-primary'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+                        ? 'text-foreground border-accent'
+                        : 'text-muted-foreground border-transparent hover:text-foreground'
                     )}
                   >
                     {stat}
@@ -505,7 +505,7 @@ export function MainContent({ player }: MainContentProps) {
         {/* Simplified Filters Control Bar */}
         <div className="flex items-center gap-4">
           {/* Games Slider */}
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary/50">
+          <div className="flex items-center gap-2">
             <Button
               variant="ghost"
               size="icon"
@@ -531,21 +531,21 @@ export function MainContent({ player }: MainContentProps) {
           {/* Active filter summary */}
           {activeFilterCount > 0 && (
             <div className="text-xs text-muted-foreground">
-              {filteredGameLogs.length} of {gameLogs.length} games
+              <span className="font-mono">{filteredGameLogs.length}</span> of <span className="font-mono">{gameLogs.length}</span> games
             </div>
           )}
 
           {/* Filter Panel Toggle Button */}
           <Button
-            variant={isFilterPanelOpen ? 'secondary' : 'outline'}
+            variant="ghost"
             size="sm"
-            className="ml-auto h-8 gap-2"
+            className="ml-auto h-8 gap-2 text-muted-foreground"
             onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
           >
-            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <SlidersHorizontal className={cn("h-3.5 w-3.5", activeFilterCount > 0 && "text-accent")} />
             <span>Filters</span>
             {activeFilterCount > 0 && (
-              <Badge variant="secondary" className="h-5 w-5 p-0 flex items-center justify-center text-xs">
+              <Badge variant="neutral" className="h-5 w-5 p-0 flex items-center justify-center">
                 {activeFilterCount}
               </Badge>
             )}
@@ -556,9 +556,24 @@ export function MainContent({ player }: MainContentProps) {
         <div className="flex gap-4">
           {/* Chart Card - uses explicit width transition */}
           <div
-            className="relative p-6 rounded-xl bg-card border border-border transition-[width] duration-300 ease-out overflow-hidden"
+            className="card-surface relative rounded-lg p-4 transition-[width] duration-300 ease-out overflow-hidden"
             style={{ width: isFilterPanelOpen ? 'calc(100% - 296px)' : '100%' }}
           >
+            {/* Legend */}
+            <div className="flex items-center justify-end gap-4 mb-3">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-sm bg-success/65" />
+                <span className="text-xs font-sans text-muted-foreground">Over {displayLineValue}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-sm bg-destructive/65" />
+                <span className="text-xs font-sans text-muted-foreground">Under {displayLineValue}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-sm border border-dashed border-muted-foreground" />
+                <span className="text-xs font-sans text-muted-foreground">Upcoming</span>
+              </div>
+            </div>
             {isLoadingLogs ? (
               <div className="w-full h-[450px] flex items-center justify-center">
                 <div className="text-muted-foreground">Loading game data...</div>
@@ -589,27 +604,12 @@ export function MainContent({ player }: MainContentProps) {
               />
             )}
 
-            {/* Legend */}
-            <div className="flex items-center justify-end gap-6 mt-4 pt-4 border-t border-border">
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-green-500" />
-                <span className="text-xs text-muted-foreground">Over {displayLineValue}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-red-500" />
-                <span className="text-xs text-muted-foreground">Under {displayLineValue}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded border-2 border-dashed border-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Upcoming</span>
-              </div>
-            </div>
           </div>
 
           {/* Filter Panel - Slides in from right */}
           <div
             className={cn(
-              "rounded-xl bg-card border border-border overflow-hidden transition-all duration-300 ease-out flex-shrink-0",
+              "card-surface rounded-lg overflow-hidden transition-all duration-300 ease-out flex-shrink-0",
               isFilterPanelOpen
                 ? "w-[280px] opacity-100"
                 : "w-0 opacity-0 pointer-events-none"

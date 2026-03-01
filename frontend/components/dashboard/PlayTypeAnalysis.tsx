@@ -20,10 +20,10 @@ export function PlayTypeAnalysis({
   onRetry,
 }: PlayTypeAnalysisProps) {
   return (
-    <div className="p-6 rounded-xl bg-card border border-border">
+    <div className="card-surface rounded-lg p-4">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Play Type Analysis</h3>
-        <span className="text-sm text-muted-foreground">vs {opponentName}</span>
+        <h3 className="font-display text-sm font-semibold text-foreground">Play Type Analysis</h3>
+        <span className="label-meta">vs {opponentName}</span>
       </div>
 
       {isLoading ? (
@@ -33,33 +33,38 @@ export function PlayTypeAnalysis({
       ) : matchups.length === 0 ? (
         <div className="text-sm text-muted-foreground text-center py-4">No play type data available</div>
       ) : (
-        <div className="space-y-2">
+        <div>
           {/* Header */}
-          <div className="grid grid-cols-4 gap-4 text-xs font-medium text-muted-foreground uppercase tracking-wider pb-2 border-b border-border">
-            <div>Play Type</div>
-            <div className="text-right">Player PPG</div>
-            <div className="text-right">Opp DEF Rank</div>
-            <div className="text-right">Opp PPP</div>
+          <div className="grid grid-cols-4 gap-4 pb-2 border-b border-border/40">
+            <div className="label-meta">Play Type</div>
+            <div className="label-meta text-right">Player PPG</div>
+            <div className="label-meta text-right">Opp DEF Rank</div>
+            <div className="label-meta text-right">Opp PPP</div>
           </div>
 
           {/* Rows */}
           {matchups.map((matchup) => (
-            <div key={matchup.playType} className="grid grid-cols-4 gap-4 py-2 text-sm border-b border-border/50 last:border-0">
-              <div className="font-medium">{matchup.playType}</div>
-              <div className="text-right font-mono">
+            <div
+              key={matchup.playType}
+              className="grid grid-cols-4 gap-4 py-2.5 border-b border-border/40 last:border-0 duration-150 ease-out hover:bg-surface-hover"
+            >
+              <div className="font-sans text-sm font-medium text-foreground">{matchup.playType}</div>
+              <div className="text-right font-mono text-sm text-foreground">
                 {matchup.playerPpg.toFixed(1)}
-                <span className="text-muted-foreground ml-1">({matchup.pctOfTotal.toFixed(0)}%)</span>
+                <span className="font-mono text-xs text-muted-foreground ml-1">({matchup.pctOfTotal.toFixed(0)}%)</span>
               </div>
-              <div className={cn(
-                "text-right font-mono font-semibold",
-                matchup.oppRank >= 21 ? "text-green-500" :
-                matchup.oppRank >= 11 ? "text-yellow-500" :
-                matchup.oppRank >= 6 ? "text-orange-500" :
-                "text-red-500"
-              )}>
-                #{matchup.oppRank}
+              <div className="text-right">
+                <span className="text-muted-foreground font-mono text-sm">#</span>
+                <span className={cn(
+                  "font-mono text-sm",
+                  matchup.oppRank >= 26 ? "text-success font-bold" :
+                  matchup.oppRank <= 5 ? "text-destructive font-bold" :
+                  "text-muted-foreground"
+                )}>
+                  {matchup.oppRank}
+                </span>
               </div>
-              <div className="text-right font-mono">{matchup.oppPpp.toFixed(3)}</div>
+              <div className="text-right font-mono text-sm text-muted-foreground">{matchup.oppPpp.toFixed(3)}</div>
             </div>
           ))}
         </div>

@@ -59,42 +59,39 @@ export function AssistZonesCourt({
 
   // Render a zone tooltip
   const ZoneTooltipContent = ({ zone }: { zone: ApiAssistZoneMatchup }) => {
-    // Debug: log the zone data
-    console.log('Zone data:', zone);
-
     return (
       <div className="p-3 space-y-2 min-w-[220px]">
-        <div className="border-b pb-2 mb-2" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
-          <div className="text-[10px] uppercase tracking-wider opacity-60" style={{ color: '#888' }}>
+        <div className="border-b border-border/20 pb-2 mb-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Zone
           </div>
-          <div className="font-semibold text-sm mt-1" style={{ color: '#fff' }}>
+          <div className="font-semibold text-sm mt-1 text-foreground">
             {zone.zoneName || 'Unknown Zone'}
           </div>
         </div>
         {zone.hasData ? (
           <div className="space-y-2">
             <div className="flex justify-between items-center text-xs">
-              <span style={{ color: '#888' }}>Player Assists:</span>
-              <span className="font-mono font-semibold" style={{ color: '#fff' }}>
+              <span className="text-muted-foreground">Player Assists:</span>
+              <span className="font-mono font-semibold text-foreground">
                 {zone.playerAssists} of {totalAssists} ({zone.playerAstPct?.toFixed(1)}%)
               </span>
             </div>
             <div className="flex justify-between items-center text-xs">
-              <span style={{ color: '#888' }}>Opp DEF Rank:</span>
-              <span className="font-mono font-semibold" style={{ color: zone.oppDefRank >= 21 ? '#4ade80' : zone.oppDefRank >= 11 ? '#facc15' : '#f87171' }}>
+              <span className="text-muted-foreground">Opp DEF Rank:</span>
+              <span className="font-mono font-semibold" style={{ color: zone.oppDefRank >= 21 ? 'var(--success)' : zone.oppDefRank >= 11 ? 'var(--accent)' : 'var(--destructive)' }}>
                 #{zone.oppDefRank} of 30
               </span>
             </div>
             <div className="flex justify-between items-center text-xs">
-              <span style={{ color: '#888' }}>Opp DEF FG%:</span>
-              <span className="font-mono" style={{ color: '#fff' }}>
+              <span className="text-muted-foreground">Opp DEF FG%:</span>
+              <span className="font-mono text-foreground">
                 {((zone.oppDefFgPct || 0) * 100).toFixed(1)}%
               </span>
             </div>
           </div>
         ) : (
-          <div className="text-xs italic" style={{ color: '#888' }}>No data available</div>
+          <div className="text-xs italic text-muted-foreground">No data available</div>
         )}
       </div>
     );
@@ -134,7 +131,7 @@ export function AssistZonesCourt({
       <svg
         viewBox={`0 0 ${COURT_WIDTH} ${COURT_HEIGHT}`}
         className={`w-full max-w-[400px] mx-auto ${className}`}
-        style={{ backgroundColor: 'oklch(0.15 0.005 285)' }}
+        style={{ backgroundColor: 'var(--background)' }}
       >
         {/* === ZONE LAYERS (bottom to top) === */}
 
@@ -254,7 +251,7 @@ export function AssistZonesCourt({
         </InteractiveZone>
 
         {/* === COURT LINES (for reference, subtle) === */}
-        <g stroke="oklch(0.35 0.01 285)" strokeWidth="1.5" fill="none" opacity="0.3">
+        <g stroke="var(--border)" strokeWidth="1.5" fill="none" opacity="0.6">
           {/* Basket */}
           <circle cx={BASKET_X} cy={BASKET_Y} r="7.5" />
 
@@ -278,6 +275,34 @@ export function AssistZonesCourt({
                 A ${RESTRICTED_RADIUS} ${RESTRICTED_RADIUS} 0 0 1 ${BASKET_X + RESTRICTED_RADIUS} ${BASKET_Y}`}
           />
         </g>
+
+        {/* Zone Labels */}
+        {[
+          { name: 'Restricted Area', x: BASKET_X, y: BASKET_Y + 16 },
+          { name: 'In The Paint (Non-RA)', x: BASKET_X, y: 100 },
+          { name: 'Mid-Range', x: 120, y: 55 },
+          { name: 'Left Corner 3', x: CORNER_3_WIDTH / 2, y: CORNER_3_HEIGHT / 2 },
+          { name: 'Right Corner 3', x: COURT_WIDTH - CORNER_3_WIDTH / 2, y: CORNER_3_HEIGHT / 2 },
+          { name: 'Above the Break 3', x: BASKET_X, y: COURT_HEIGHT - 80 },
+        ].map(({ name, x, y }) => {
+          const zone = getZone(name);
+          if (!zone?.hasData || !zone.playerAstPct) return null;
+          return (
+            <text
+              key={name}
+              x={x}
+              y={y}
+              textAnchor="middle"
+              dominantBaseline="central"
+              fill="var(--foreground)"
+              fontSize="11"
+              fontFamily="'JetBrains Mono', monospace"
+              style={{ pointerEvents: 'none' }}
+            >
+              {zone.playerAstPct.toFixed(0)}%
+            </text>
+          );
+        })}
       </svg>
     </TooltipProvider>
   );

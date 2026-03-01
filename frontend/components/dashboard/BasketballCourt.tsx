@@ -112,11 +112,9 @@ function formatRank(rank: number): string {
  * Get defense quality label
  */
 function getDefenseLabel(rank: number): { label: string; color: string } {
-  if (rank <= 5) return { label: 'Elite', color: '#f87171' }; // Red = hard for player
-  if (rank <= 10) return { label: 'Good', color: '#fb923c' };
-  if (rank <= 20) return { label: 'Average', color: '#facc15' };
-  if (rank <= 25) return { label: 'Weak', color: '#a3e635' };
-  return { label: 'Poor', color: '#4ade80' }; // Green = easy for player
+  if (rank <= 10) return { label: 'Strong', color: 'var(--destructive)' };
+  if (rank <= 20) return { label: 'Average', color: 'var(--accent)' };
+  return { label: 'Weak', color: 'var(--success)' };
 }
 
 export function BasketballCourt({ zoneData, totalFga, className = '' }: BasketballCourtProps) {
@@ -134,11 +132,11 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
     return (
       <div className="p-3 space-y-2 min-w-[240px]">
         {/* Zone Header */}
-        <div className="border-b pb-2 mb-2" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
-          <div className="font-semibold text-sm" style={{ color: '#fff' }}>
+        <div className="border-b border-border/20 pb-2 mb-2">
+          <div className="font-semibold text-sm text-foreground">
             {ZONE_DISPLAY_NAMES[zone.zoneName] || zone.zoneName}
           </div>
-          <div className="text-[10px] mt-1" style={{ color: '#888' }}>
+          <div className="text-[10px] mt-1 text-muted-foreground">
             {zone.isThree ? '3-Point Zone' : '2-Point Zone'}
           </div>
         </div>
@@ -147,26 +145,26 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
           <div className="space-y-3">
             {/* Player Stats */}
             <div>
-              <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#666' }}>
+              <div className="text-[10px] uppercase tracking-wider mb-1 text-muted-foreground">
                 Player
               </div>
               <div className="flex justify-between items-center text-xs">
-                <span style={{ color: '#888' }}>FG%:</span>
-                <span className="font-mono font-semibold" style={{ color: '#fff' }}>
+                <span className="text-muted-foreground">FG%:</span>
+                <span className="font-mono font-semibold text-foreground">
                   {zone.playerFgPct.toFixed(1)}%
                 </span>
               </div>
               <div className="flex justify-between items-center text-xs">
-                <span style={{ color: '#888' }}>Attempts:</span>
-                <span className="font-mono" style={{ color: '#fff' }}>
+                <span className="text-muted-foreground">Attempts:</span>
+                <span className="font-mono text-foreground">
                   {zone.playerFgm.toFixed(0)}/{zone.playerFga.toFixed(0)} ({zone.playerVolumePct.toFixed(0)}% of shots)
                 </span>
               </div>
               <div className="flex justify-between items-center text-xs">
-                <span style={{ color: '#888' }}>vs League Avg:</span>
+                <span className="text-muted-foreground">vs League Avg:</span>
                 <span
                   className="font-mono font-semibold"
-                  style={{ color: zone.playerFgPct > zone.leagueAvgPct ? '#4ade80' : zone.playerFgPct < zone.leagueAvgPct - 3 ? '#f87171' : '#facc15' }}
+                  style={{ color: zone.playerFgPct > zone.leagueAvgPct ? 'var(--success)' : zone.playerFgPct < zone.leagueAvgPct - 3 ? 'var(--destructive)' : 'var(--accent)' }}
                 >
                   {zone.playerFgPct > zone.leagueAvgPct ? '+' : ''}{(zone.playerFgPct - zone.leagueAvgPct).toFixed(1)}%
                 </span>
@@ -175,17 +173,17 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
 
             {/* Opponent Defense */}
             <div>
-              <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#666' }}>
+              <div className="text-[10px] uppercase tracking-wider mb-1 text-muted-foreground">
                 Opponent Defense
               </div>
               <div className="flex justify-between items-center text-xs">
-                <span style={{ color: '#888' }}>Allows:</span>
-                <span className="font-mono" style={{ color: '#fff' }}>
+                <span className="text-muted-foreground">Allows:</span>
+                <span className="font-mono text-foreground">
                   {zone.oppFgPct.toFixed(1)}%
                 </span>
               </div>
               <div className="flex justify-between items-center text-xs">
-                <span style={{ color: '#888' }}>Rank:</span>
+                <span className="text-muted-foreground">Rank:</span>
                 <span className="font-mono" style={{ color: defenseInfo.color }}>
                   {formatRank(zone.oppRank)} ({defenseInfo.label})
                 </span>
@@ -193,18 +191,18 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
             </div>
 
             {/* League Context */}
-            <div className="pt-2 border-t" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+            <div className="pt-2 border-t border-border/20">
               <div className="flex justify-between items-center text-xs">
-                <span style={{ color: '#888' }}>League Avg:</span>
-                <span className="font-mono" style={{ color: '#888' }}>
+                <span className="text-muted-foreground">League Avg:</span>
+                <span className="font-mono text-muted-foreground">
                   {zone.leagueAvgPct.toFixed(1)}%
                 </span>
               </div>
               <div className="flex justify-between items-center text-xs mt-1">
-                <span style={{ color: '#888' }}>Matchup Adv:</span>
+                <span className="text-muted-foreground">Matchup Adv:</span>
                 <span
                   className="font-mono font-bold"
-                  style={{ color: zone.advantage > 5 ? '#4ade80' : zone.advantage > -5 ? '#facc15' : '#f87171' }}
+                  style={{ color: zone.advantage > 5 ? 'var(--success)' : zone.advantage > -5 ? 'var(--accent)' : 'var(--destructive)' }}
                 >
                   {zone.advantage > 0 ? '+' : ''}{zone.advantage.toFixed(1)}%
                 </span>
@@ -212,7 +210,7 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
             </div>
           </div>
         ) : (
-          <div className="text-xs italic" style={{ color: '#888' }}>No data available</div>
+          <div className="text-xs italic text-muted-foreground">No data available</div>
         )}
       </div>
     );
@@ -262,7 +260,7 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
       <svg
         viewBox={`0 0 ${COURT_WIDTH} ${COURT_HEIGHT}`}
         className={`w-full max-w-[400px] mx-auto ${className}`}
-        style={{ backgroundColor: 'oklch(0.15 0.005 285)' }}
+        style={{ backgroundColor: 'var(--background)' }}
       >
         {/* === ZONE LAYERS (bottom to top) === */}
 
@@ -341,7 +339,8 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
           x="0" y="0"
           width={COURT_WIDTH} height={COURT_HEIGHT}
           fill="none"
-          stroke="oklch(0.35 0.005 285)"
+          stroke="var(--border)"
+          opacity="0.6"
           strokeWidth="2"
         />
 
@@ -351,7 +350,8 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
               A ${THREE_PT_RADIUS} ${THREE_PT_RADIUS} 0 0 0 ${COURT_WIDTH - CORNER_3_WIDTH} ${CORNER_3_HEIGHT}
               L ${COURT_WIDTH - CORNER_3_WIDTH} 0`}
           fill="none"
-          stroke="oklch(0.35 0.005 285)"
+          stroke="var(--border)"
+          opacity="0.6"
           strokeWidth="2"
         />
 
@@ -359,7 +359,8 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
           x={KEY_LEFT} y="0"
           width={KEY_WIDTH} height={KEY_HEIGHT}
           fill="none"
-          stroke="oklch(0.35 0.005 285)"
+          stroke="var(--border)"
+          opacity="0.6"
           strokeWidth="2"
         />
 
@@ -367,7 +368,8 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
           d={`M ${BASKET_X - RESTRICTED_RADIUS} ${BASKET_Y}
               A ${RESTRICTED_RADIUS} ${RESTRICTED_RADIUS} 0 0 0 ${BASKET_X + RESTRICTED_RADIUS} ${BASKET_Y}`}
           fill="none"
-          stroke="oklch(0.35 0.005 285)"
+          stroke="var(--border)"
+          opacity="0.6"
           strokeWidth="2"
         />
 
@@ -375,7 +377,8 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
           d={`M ${BASKET_X - 55} ${KEY_HEIGHT}
               A 55 55 0 0 1 ${BASKET_X + 55} ${KEY_HEIGHT}`}
           fill="none"
-          stroke="oklch(0.35 0.005 285)"
+          stroke="var(--border)"
+          opacity="0.6"
           strokeWidth="2"
         />
 
@@ -385,7 +388,8 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
           cy={BASKET_Y - 10}
           r="7"
           fill="none"
-          stroke="oklch(0.55 0.12 25)"
+          stroke="var(--destructive)"
+          opacity="0.7"
           strokeWidth="2.5"
         />
 
@@ -393,9 +397,38 @@ export function BasketballCourt({ zoneData, totalFga, className = '' }: Basketba
         <line
           x1={BASKET_X - 25} y1="8"
           x2={BASKET_X + 25} y2="8"
-          stroke="oklch(0.45 0.005 285)"
+          stroke="var(--muted-foreground)"
+          opacity="0.5"
           strokeWidth="3"
         />
+
+        {/* Zone Labels */}
+        {[
+          { name: 'Restricted Area', x: BASKET_X, y: BASKET_Y + 16 },
+          { name: 'In The Paint (Non-RA)', x: BASKET_X, y: 100 },
+          { name: 'Mid-Range', x: 120, y: 55 },
+          { name: 'Left Corner 3', x: CORNER_3_WIDTH / 2, y: CORNER_3_HEIGHT / 2 },
+          { name: 'Right Corner 3', x: COURT_WIDTH - CORNER_3_WIDTH / 2, y: CORNER_3_HEIGHT / 2 },
+          { name: 'Above the Break 3', x: BASKET_X, y: COURT_HEIGHT - 80 },
+        ].map(({ name, x, y }) => {
+          const zone = getZone(name);
+          if (!zone?.hasData) return null;
+          return (
+            <text
+              key={name}
+              x={x}
+              y={y}
+              textAnchor="middle"
+              dominantBaseline="central"
+              fill="var(--foreground)"
+              fontSize="11"
+              fontFamily="'JetBrains Mono', monospace"
+              style={{ pointerEvents: 'none' }}
+            >
+              {zone.playerFgPct.toFixed(0)}%
+            </text>
+          );
+        })}
       </svg>
     </TooltipProvider>
   );
