@@ -269,7 +269,7 @@ def _check_and_retrain():
 
     cursor.execute('''
         SELECT AVG(classifier_correct) as accuracy, COUNT(*) as count
-        FROM prediction_log
+        FROM paper_trades
         WHERE actual_value IS NOT NULL
         AND game_date >= DATE('now', '-7 days')
         AND (classifier_prob >= 0.55 OR classifier_prob <= 0.45)
@@ -290,7 +290,7 @@ def _check_and_retrain():
     needs_retrain = False
     reason = ""
 
-    if recent_count < 50:
+    if recent_count < 30:
         reason = f"Not enough recent data ({recent_count} predictions)"
     elif recent_accuracy < 0.65:
         needs_retrain = True
