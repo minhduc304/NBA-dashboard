@@ -8,6 +8,7 @@ import logging
 import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 from .odds_api import OddsAPI, RateLimitError
 
 logger = logging.getLogger(__name__)
@@ -116,10 +117,10 @@ class PropsScraper:
             away_team = event['away_team']
             commence_time = event['commence_time']
 
-            # Parse game date
+            # Parse game date — convert UTC to US Eastern since NBA dates are in ET
             game_date = datetime.fromisoformat(
                 commence_time.replace('Z', '+00:00')
-            ).strftime('%Y-%m-%d')
+            ).astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
 
             logger.info("%s @ %s (%s)", away_team, home_team, game_date)
 
