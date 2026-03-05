@@ -268,7 +268,7 @@ class HyperparameterTuner:
                 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
                 'subsample': trial.suggest_float('subsample', 0.5, 1.0),
                 'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-                'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+                'min_child_weight': trial.suggest_int('min_child_weight', 1, 20),
                 'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10.0, log=True),
                 'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10.0, log=True),
                 'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -372,34 +372,44 @@ class HyperparameterTuner:
         }
 
 
-def save_tuned_params(results: Dict, output_path: str = 'models/tuned_params.json'):
-    """Save tuned parameters to JSON file."""
+def save_tuned_params(results: Dict, output_path: str = 'trained_models/tuned_params.json'):
+    """Save tuned parameters to JSON file, merging with existing results."""
     import json
     import os
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # Remove non-serializable objects (study)
-    serializable = {}
+    # Load existing params to merge with
+    existing = {}
+    if os.path.exists(output_path):
+        with open(output_path) as f:
+            existing = json.load(f)
+
+    # Remove non-serializable objects (study) and merge
     for stat_type, data in results.items():
-        serializable[stat_type] = {
-            'regressor': {
+        entry = existing.get(stat_type, {})
+
+        if 'regressor' in data:
+            entry['regressor'] = {
                 'best_params': data['regressor']['best_params'],
                 'val_mae': data['regressor']['val_mae'],
                 'test_mae': data['regressor']['test_mae'],
-            },
-            'classifier': {
+            }
+
+        if 'classifier' in data:
+            entry['classifier'] = {
                 'best_params': data['classifier']['best_params'],
                 'val_auc': data['classifier']['val_auc'],
                 'test_auc': data['classifier']['test_auc'],
                 'val_accuracy': data['classifier']['val_accuracy'],
                 'test_accuracy': data['classifier']['test_accuracy'],
-            },
-            'tuned_at': data.get('tuned_at'),
-        }
+            }
+
+        entry['tuned_at'] = data.get('tuned_at')
+        existing[stat_type] = entry
 
     with open(output_path, 'w') as f:
-        json.dump(serializable, f, indent=2)
+        json.dump(existing, f, indent=2)
 
     logger.info("Saved tuned parameters to %s", output_path)
 

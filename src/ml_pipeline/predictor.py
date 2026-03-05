@@ -26,6 +26,7 @@ class PropPredictor:
         stat_type: str,
         model_dir: str = DEFAULT_MODEL_DIR,
         db_path: str = DEFAULT_DB_PATH,
+        min_prob: float = 0.55,
     ):
         """
         Initialize predictor for a specific stat type.
@@ -34,10 +35,12 @@ class PropPredictor:
             stat_type: Type of prop (points, rebounds, etc.)
             model_dir: Directory containing trained models
             db_path: Path to database for auxiliary data
+            min_prob: Minimum probability threshold for OVER/UNDER recommendations
         """
         self.stat_type = stat_type
         self.model_dir = model_dir
         self.db_path = db_path
+        self.min_prob = min_prob
         self.feature_engineer = FeatureEngineer(stat_type)
         self.data_loader = PropDataLoader(db_path)
 
@@ -50,6 +53,8 @@ class PropPredictor:
         self._matchup_stats = None
         self._consistency_stats = None
         self._opp_defense = None
+        self._pos_defense = None
+        self._player_positions = None
 
         self._load_models()
         self._load_auxiliary_data()
@@ -59,6 +64,8 @@ class PropPredictor:
         self._matchup_stats = self.data_loader.get_player_vs_opponent_stats(self.stat_type)
         self._consistency_stats = self.data_loader.get_player_consistency_stats(self.stat_type)
         self._opp_defense = self.data_loader.get_opponent_stat_defense(self.stat_type)
+        self._pos_defense = self.data_loader.get_position_defense(self.stat_type)
+        self._player_positions = self.data_loader.get_player_position_groups()
 
     def _load_models(self):
         """Load trained models from disk."""
@@ -112,6 +119,8 @@ class PropPredictor:
             matchup_stats=self._matchup_stats,
             consistency_stats=self._consistency_stats,
             opp_defense=self._opp_defense,
+            pos_defense=self._pos_defense,
+            player_positions=self._player_positions,
         )
 
         # Ensure all required features are present for both models
@@ -152,7 +161,12 @@ class PropPredictor:
         self._add_probability_edge(df)
 
         # Recommendation (based on classifier only)
-        df['recommendation'] = df.apply(self._get_recommendation, axis=1)
+        df['recommendation'] = df.apply(
+            lambda row: self._get_recommendation(
+                row, min_over_prob=self.min_prob, min_under_prob=self.min_prob
+            ),
+            axis=1,
+        )
 
         return df
 
@@ -317,7 +331,7 @@ def get_daily_predictions(
                 continue
 
             # Generate predictions with db_path for auxiliary data
-            predictor = PropPredictor(stat_type, model_dir, db_path)
+            predictor = PropPredictor(stat_type, model_dir, db_path, min_prob=min_confidence)
             predictions = predictor.predict(props_df)
 
             all_predictions.append(predictions)

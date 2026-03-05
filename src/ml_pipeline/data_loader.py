@@ -551,6 +551,83 @@ class PropDataLoader:
 
         return df
 
+    def get_player_position_groups(self) -> pd.DataFrame:
+        """
+        Get player position groups mapped to Guard/Forward/Center.
+
+        Uses player_stats.position, mapping multi-position designations
+        to the primary position group.
+
+        Returns:
+            DataFrame with player_id and position_group columns
+        """
+        query = """
+        SELECT
+            CAST(player_id AS TEXT) as player_id,
+            position
+        FROM player_stats
+        WHERE position IS NOT NULL
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        # Map to position groups: G/G-F/F-G → Guard, F/F-C/C-F → Forward, C → Center
+        pos_map = {
+            'G': 'Guard', 'G-F': 'Guard', 'F-G': 'Guard',
+            'F': 'Forward', 'F-C': 'Forward', 'C-F': 'Forward',
+            'C': 'Center',
+        }
+        df['position_group'] = df['position'].map(pos_map).fillna('Forward')
+
+        # Keep one row per player (most recent season)
+        df = df.drop_duplicates(subset='player_id', keep='last')
+
+        return df[['player_id', 'position_group']]
+
+    def get_position_defense(self, stat_type: str) -> pd.DataFrame:
+        """
+        Get opponent defensive stats broken down by player position group.
+
+        Joins player_game_logs with player_stats to compute how many points/rebounds/etc
+        each team allows to Guards vs Forwards vs Centers.
+
+        Args:
+            stat_type: Type of stat (points, rebounds, assists)
+
+        Returns:
+            DataFrame with opponent_abbr, position_group, and avg stat allowed
+        """
+        stat_col = STAT_COLUMNS.get(stat_type, 'pts')
+
+        query = f"""
+        SELECT
+            pgl.opponent_abbr,
+            CASE
+                WHEN ps.position IN ('G', 'G-F', 'F-G') THEN 'Guard'
+                WHEN ps.position IN ('F', 'F-C', 'C-F') THEN 'Forward'
+                WHEN ps.position = 'C' THEN 'Center'
+                ELSE 'Forward'
+            END as position_group,
+            AVG(pgl.{stat_col}) as pos_avg_stat_allowed,
+            COUNT(*) as sample_count
+        FROM player_game_logs pgl
+        JOIN player_stats ps
+            ON CAST(pgl.player_id AS TEXT) = CAST(ps.player_id AS TEXT)
+        WHERE pgl.game_date >= DATE('now', '-60 days')
+        AND pgl.min >= 15
+        AND ps.position IS NOT NULL
+        GROUP BY pgl.opponent_abbr, position_group
+        HAVING sample_count >= 5
+        """
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        return df
+
     def get_player_play_types(self) -> pd.DataFrame:
         """
         Get player play type distribution.

@@ -86,5 +86,29 @@
       "test_accuracy": 0.40816326530612246
     },
     "tuned_at": "2026-01-11T19:25:38.505735"
+  },
+  "points": {
+    "classifier": {
+      "best_params": {
+        "objective": "binary:logistic",
+        "eval_metric": "auc",
+        "use_label_encoder": false,
+        "random_state": 42,
+        "early_stopping_rounds": 50,
+        "max_depth": 10,
+        "learning_rate": 0.022018117125406585,
+        "subsample": 0.6953050113746944,
+        "colsample_bytree": 0.8540690963193087,
+        "min_child_weight": 2,
+        "reg_alpha": 0.0004705970082782129,
+        "reg_lambda": 6.605533189094008e-06,
+        "n_estimators": 354
+      },
+      "val_auc": 0.5974880221246347,
+      "test_auc": 0.5330474170415433,
+      "val_accuracy": 0.5382087099424815,
+      "test_accuracy": 0.5247042449547669
+    },
+    "tuned_at": "2026-03-02T18:53:54.338564"
   }
 }

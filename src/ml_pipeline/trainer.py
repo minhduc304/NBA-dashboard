@@ -17,6 +17,7 @@ from .config import (
     DEFAULT_DB_PATH, DEFAULT_MODEL_DIR, DEFAULT_TEST_DAYS, DEFAULT_VAL_DAYS,
     CLASSIFIER_RECENCY_HALF_LIFE, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT,
     REGRESSOR_RECENCY_HALF_LIFE, RECENCY_MIN_WEIGHT,
+    LOW_LINE_PERCENTILE, LOW_LINE_WEIGHT_FACTOR,
     get_model_params,
 )
 
@@ -47,7 +48,7 @@ class ModelTrainer:
         model_dir: str = DEFAULT_MODEL_DIR,
         use_tuned_params: bool = True,
         max_classifier_features: Optional[int] = None,
-        min_feature_importance: float = 0.001,
+        min_feature_importance: float = 0.01,
     ):
         """
         Initialize trainer for a specific stat type.
@@ -81,6 +82,37 @@ class ModelTrainer:
         self._classifier_features = None
         self._feature_selector = None
         self._checkpoint_dir = os.path.join(model_dir, 'checkpoints')
+
+    @staticmethod
+    def _apply_line_weight_adjustment(
+        weights: np.ndarray,
+        lines: pd.Series,
+        threshold: float = None,
+        factor: float = LOW_LINE_WEIGHT_FACTOR,
+        percentile: float = LOW_LINE_PERCENTILE,
+    ) -> np.ndarray:
+        """
+        Down-weight low-line props by multiplying existing weights.
+
+        The threshold is computed as a percentile of the training lines,
+        so it auto-adapts per stat type (~8.5 for points, ~5 for rebounds).
+
+        Args:
+            weights: Existing sample weights (e.g., from recency weighting)
+            lines: Series of betting lines
+            threshold: Explicit threshold (overrides percentile if provided)
+            factor: Multiplicative factor for low-line weights (0-1)
+            percentile: Percentile of lines to use as threshold (default p20)
+
+        Returns:
+            Adjusted weights array
+        """
+        if threshold is None:
+            threshold = lines.quantile(percentile)
+        adjusted = weights.copy()
+        low_line_mask = lines.values < threshold
+        adjusted[low_line_mask] *= factor
+        return adjusted
 
     @staticmethod
     def _compute_recency_weights(game_dates, half_life_days, min_weight=RECENCY_MIN_WEIGHT):
@@ -195,6 +227,8 @@ class ModelTrainer:
         matchup_stats = self.data_loader.get_player_vs_opponent_stats(self.stat_type)
         consistency_stats = self.data_loader.get_player_consistency_stats(self.stat_type)
         opp_defense = self.data_loader.get_opponent_stat_defense(self.stat_type)
+        pos_defense = self.data_loader.get_position_defense(self.stat_type)
+        player_positions = self.data_loader.get_player_position_groups()
 
         # === REGRESSOR: Train on historical game logs ===
         if use_historical:
@@ -209,6 +243,8 @@ class ModelTrainer:
                 matchup_stats=matchup_stats,
                 consistency_stats=consistency_stats,
                 opp_defense=opp_defense,
+                pos_defense=pos_defense,
+                player_positions=player_positions,
             )
 
             # Time-based 3-way split for regressor
@@ -291,6 +327,8 @@ class ModelTrainer:
             matchup_stats=matchup_stats,
             consistency_stats=consistency_stats,
             opp_defense=opp_defense,
+            pos_defense=pos_defense,
+            player_positions=player_positions,
         )
 
         # Time-based 3-way split for classifier
@@ -329,6 +367,12 @@ class ModelTrainer:
         clf_weights = self._compute_recency_weights(
             clf_train_df['game_date'], clf_half_life
         )
+
+        # Down-weight low-line props (noisy — single shot swings outcome)
+        if 'line' in clf_train_df.columns:
+            clf_weights = self._apply_line_weight_adjustment(
+                clf_weights, clf_train_df['line']
+            )
 
         # Feature selection: Train initial model, select important features, retrain
         use_feature_selection = (
@@ -573,7 +617,7 @@ def train_all_models(
     test_days: int = DEFAULT_TEST_DAYS,
     use_tuned_params: bool = True,
     max_classifier_features: Optional[int] = None,
-    min_feature_importance: float = 0.001,
+    min_feature_importance: float = 0.01,
     calibrate: bool = True,
     calibration_method: Literal['isotonic', 'sigmoid'] = 'isotonic',
 ) -> Dict[str, Dict]:

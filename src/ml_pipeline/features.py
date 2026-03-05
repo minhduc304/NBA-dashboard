@@ -106,6 +106,8 @@ class FeatureEngineer:
         consistency_stats: Optional[pd.DataFrame] = None,
         opp_defense: Optional[pd.DataFrame] = None,
         include_minutes_projection: bool = True,
+        pos_defense: Optional[pd.DataFrame] = None,
+        player_positions: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
         Add all derived features to the dataframe.
@@ -148,6 +150,9 @@ class FeatureEngineer:
 
         # NEW: Opponent defense features
         df = self._add_opponent_defense_features(df, opp_defense)
+
+        # Position-specific opponent defense features
+        df = self._add_position_defense_features(df, pos_defense, player_positions)
 
         # NEW: Minutes projection features
         if include_minutes_projection:
@@ -627,6 +632,68 @@ class FeatureEngineer:
 
         return df
 
+    def _add_position_defense_features(
+        self,
+        df: pd.DataFrame,
+        pos_defense: Optional[pd.DataFrame] = None,
+        player_positions: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        Add position-specific opponent defense factor.
+
+        Computes how well the opponent defends the player's specific position
+        relative to the league average for that position.
+
+        Features added:
+        - opp_pos_def_factor: Multiplier based on opponent's defense vs this position
+        """
+        if (
+            pos_defense is None or pos_defense.empty
+            or player_positions is None or player_positions.empty
+            or 'opponent_abbr' not in df.columns
+        ):
+            df['opp_pos_def_factor'] = 1.0
+            return df
+
+        # Merge player position
+        player_positions = player_positions.copy()
+        player_positions['player_id'] = player_positions['player_id'].astype(str)
+        df['player_id'] = df['player_id'].astype(str)
+
+        df = df.merge(
+            player_positions[['player_id', 'position_group']],
+            on='player_id',
+            how='left',
+        )
+        df['position_group'] = df['position_group'].fillna('Forward')
+
+        # Compute league average per position group
+        pos_league_avg = pos_defense.groupby('position_group')['pos_avg_stat_allowed'].mean()
+
+        # Merge position-specific defense
+        df = df.merge(
+            pos_defense[['opponent_abbr', 'position_group', 'pos_avg_stat_allowed']],
+            on=['opponent_abbr', 'position_group'],
+            how='left',
+        )
+
+        # Compute factor: opponent position defense / league average for that position
+        df['pos_league_avg'] = df['position_group'].map(pos_league_avg)
+        df['opp_pos_def_factor'] = np.where(
+            (df['pos_league_avg'].notna()) & (df['pos_league_avg'] > 0),
+            df['pos_avg_stat_allowed'].fillna(df['pos_league_avg']) / df['pos_league_avg'],
+            1.0,
+        )
+        df['opp_pos_def_factor'] = df['opp_pos_def_factor'].clip(0.8, 1.2)
+
+        # Clean up intermediate columns
+        df = df.drop(
+            columns=['pos_avg_stat_allowed', 'pos_league_avg'],
+            errors='ignore',
+        )
+
+        return df
+
     def _add_minutes_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add minutes trend slope and injury context features from pre-computed rolling stats.
@@ -786,6 +853,7 @@ class FeatureEngineer:
         return [
             'adjusted_edge',        # Adjusted projection minus line (key signal)
             'line_vs_adjusted',     # Line minus adjusted projection
+            'opp_pos_def_factor',   # Position-specific opponent defense multiplier
         ]
 
     def get_minutes_features(self) -> List[str]:

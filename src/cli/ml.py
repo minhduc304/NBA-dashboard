@@ -395,8 +395,10 @@ def compare(ctx, stat_type):
 @click.option('--timeout', default=None, type=int, help='Timeout per model (seconds)')
 @click.option('--regressor-only', is_flag=True, help='Only tune regressor')
 @click.option('--classifier-only', is_flag=True, help='Only tune classifier')
+@click.option('--val-days', default=5, type=int, help='Validation days for tuning')
+@click.option('--test-days', default=7, type=int, help='Test days for tuning')
 @click.pass_context
-def tune(ctx, stat, trials, timeout, regressor_only, classifier_only):
+def tune(ctx, stat, trials, timeout, regressor_only, classifier_only, val_days, test_days):
     """Tune model hyperparameters with Optuna."""
     from src.ml_pipeline.config import PRIORITY_STATS
 
@@ -415,16 +417,18 @@ def tune(ctx, stat, trials, timeout, regressor_only, classifier_only):
         for stat_type in stats_to_tune:
             click.echo(f"\n--- Tuning {stat_type} ---")
             tuner = HyperparameterTuner(stat_type)
+            stat_results = {}
 
             if not classifier_only:
                 click.echo("  Tuning regressor...")
-                reg_params = tuner.tune_regressor(n_trials=trials, timeout=timeout)
-                all_params[f'{stat_type}_regressor'] = reg_params
+                stat_results['regressor'] = tuner.tune_regressor(n_trials=trials, timeout=timeout, val_days=val_days, test_days=test_days)
 
             if not regressor_only:
                 click.echo("  Tuning classifier...")
-                clf_params = tuner.tune_classifier(n_trials=trials, timeout=timeout)
-                all_params[f'{stat_type}_classifier'] = clf_params
+                stat_results['classifier'] = tuner.tune_classifier(n_trials=trials, timeout=timeout, val_days=val_days, test_days=test_days)
+
+            stat_results['tuned_at'] = datetime.now().isoformat()
+            all_params[stat_type] = stat_results
 
         save_tuned_params(all_params)
         click.echo(click.style("\nTuning complete! Params saved to trained_models/tuned_params.json", fg='green'))
@@ -506,9 +510,66 @@ def cv(ctx, stat, folds, val_days, test_days, strategy, no_calibrate):
     print_cv_summary(results)
 
 
+@ml.command('learning-curve')
+@click.option('--stat', multiple=True, help='Specific stat(s) to evaluate')
+@click.option('--points', 'n_points', default=6, help='Number of training sizes to test')
+@click.option('--val-days', default=3, help='Validation days (held constant)')
+@click.option('--test-days', default=7, help='Test days (held constant)')
+@click.pass_context
+def learning_curve(ctx, stat, n_points, val_days, test_days):
+    """Run learning curve analysis to diagnose data vs model limitations."""
+    from src.ml_pipeline.learning_curve import run_learning_curve, print_learning_curve
+    from src.ml_pipeline.config import PRIORITY_STATS
+
+    stats_to_eval = list(stat) if stat else PRIORITY_STATS
+
+    click.echo("=" * 60)
+    click.echo("Learning Curve Analysis")
+    click.echo("=" * 60)
+    click.echo(f"Stats: {', '.join(stats_to_eval)}")
+    click.echo(f"Training sizes: {n_points}, Val days: {val_days}, Test days: {test_days}")
+
+    for stat_type in stats_to_eval:
+        try:
+            results = run_learning_curve(
+                stat_type=stat_type,
+                n_points=n_points,
+                val_days=val_days,
+                test_days=test_days,
+            )
+            print_learning_curve(results, stat_type)
+        except Exception as e:
+            click.echo(f"\nError for {stat_type}: {e}")
+
+
+@ml.command('error-analysis')
+@click.option('--stat', default='points', help='Stat type to analyze')
+@click.option('--val-days', default=5, type=int, help='Validation days')
+@click.option('--test-days', default=7, type=int, help='Test days')
+@click.pass_context
+def error_analysis(ctx, stat, val_days, test_days):
+    """Analyze where the classifier fails across multiple dimensions."""
+    from src.ml_pipeline.error_analysis import run_error_analysis, print_error_analysis
+
+    click.echo("=" * 60)
+    click.echo("Error Analysis")
+    click.echo("=" * 60)
+    click.echo(f"Stat: {stat}, Val days: {val_days}, Test days: {test_days}")
+
+    try:
+        results = run_error_analysis(
+            stat_type=stat,
+            val_days=val_days,
+            test_days=test_days,
+        )
+        print_error_analysis(results)
+    except Exception as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+
+
 @ml.command()
 @click.option('--stat', multiple=True, help='Specific stat(s) to predict')
-@click.option('--min-confidence', default=0.55, help='Confidence threshold')
+@click.option('--min-confidence', default=0.60, help='Confidence threshold')
 @click.option('--show-all', is_flag=True, help='Show all predictions (not just recommendations)')
 @click.pass_context
 def predict(ctx, stat, min_confidence, show_all):

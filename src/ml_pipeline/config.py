@@ -66,6 +66,9 @@ CLASSIFIER_PARAMS: Dict = {
     'n_estimators': 500,
     'random_state': 42,
     'use_label_encoder': False,
+    # Correct for slight UNDER bias in training data (~52% UNDER vs ~48% OVER).
+    # Conservative correction — 1.09 overcorrected prediction distribution.
+    'scale_pos_weight': 1.06,
 }
 
 # Combine into single config
@@ -128,7 +131,7 @@ MIN_SAMPLES = 100
 # Note: val_days + test_days must be < total days in prop_outcomes table
 # Currently ~21 days of prop data available, so using conservative values
 # As more data accumulates, increase these for more reliable estimates
-DEFAULT_VAL_DAYS = 3    # For early stopping (validation) + calibration
+DEFAULT_VAL_DAYS = 5    # For early stopping (validation) + calibration
 DEFAULT_TEST_DAYS = 7   # For final evaluation (test) - ~200+ samples
 
 # Probability calibration settings
@@ -146,3 +149,10 @@ CLASSIFIER_RECENCY_HALF_LIFE: Dict[str, int] = {
 CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT = 14   # fallback for stats not in the dict
 REGRESSOR_RECENCY_HALF_LIFE = 60    # days — gentler decay for 90k historical games
 RECENCY_MIN_WEIGHT = 0.1            # floor so no sample is zeroed out
+
+# Low-line down-weighting: props below a percentile-based threshold get reduced weight.
+# These are noisy because a single shot swings outcome.
+# The threshold is computed as the 20th percentile of training lines per stat type,
+# so it auto-adapts (~8.5 for points, ~5 for rebounds, ~4 for assists).
+LOW_LINE_PERCENTILE = 0.20          # Percentile of training lines to use as threshold
+LOW_LINE_WEIGHT_FACTOR = 0.5        # Multiply weight by this for low-line props
