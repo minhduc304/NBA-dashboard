@@ -277,7 +277,7 @@ class NBAStatsCollector:
 
         Uses the scoreboard endpoint to get recent game results.
         """
-        from nba_api.stats.endpoints import scoreboardv2
+        from nba_api.stats.endpoints import scoreboardv3
         from datetime import datetime, timedelta
 
         logger.info("Collecting game scores...")
@@ -291,36 +291,41 @@ class NBAStatsCollector:
             game_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
 
             try:
-                scoreboard = scoreboardv2.ScoreboardV2(
+                scoreboard = scoreboardv3.ScoreboardV3(
                     game_date=game_date,
                     timeout=30
                 )
-                games_df = scoreboard.get_data_frames()[0]  # GameHeader
+                games_df = scoreboard.get_data_frames()[1]  # GameHeader
 
                 if games_df.empty:
                     continue
 
-                for _, game in games_df.iterrows():
-                    game_id = game.get('GAME_ID')
-                    game_status = game.get('GAME_STATUS_TEXT', '')
-                    home_team_id = game.get('HOME_TEAM_ID')
-                    away_team_id = game.get('VISITOR_TEAM_ID')
+                line_score_df = scoreboard.get_data_frames()[2]  # LineScore
 
-                    # Get scores from line score
-                    line_score_df = scoreboard.get_data_frames()[1]  # LineScore
+                for _, game in games_df.iterrows():
+                    game_id = game.get('gameId')
+                    game_status = game.get('gameStatusText', '')
+
+                    # Parse home/away from gameCode (format: YYYYMMDD/AWYHOM)
+                    game_code = game.get('gameCode', '')
+                    teams_part = game_code.split('/')[-1] if '/' in game_code else ''
+                    away_tri = teams_part[:3]
+                    home_tri = teams_part[3:]
+
                     home_score = None
                     away_score = None
 
                     if not line_score_df.empty:
-                        home_row = line_score_df[line_score_df['TEAM_ID'] == home_team_id]
-                        away_row = line_score_df[line_score_df['TEAM_ID'] == away_team_id]
+                        game_lines = line_score_df[line_score_df['gameId'] == game_id]
+                        home_row = game_lines[game_lines['teamTricode'] == home_tri]
+                        away_row = game_lines[game_lines['teamTricode'] == away_tri]
 
                         if not home_row.empty:
-                            pts = home_row.iloc[0].get('PTS')
-                            home_score = int(pts) if pts is not None else None
+                            score = home_row.iloc[0].get('score')
+                            home_score = int(score) if score is not None else None
                         if not away_row.empty:
-                            pts = away_row.iloc[0].get('PTS')
-                            away_score = int(pts) if pts is not None else None
+                            score = away_row.iloc[0].get('score')
+                            away_score = int(score) if score is not None else None
 
                     # Update schedule
                     cursor.execute('''

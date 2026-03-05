@@ -135,6 +135,7 @@ class ProductionNBAApiClient(NBAApiClient):
         from nba_api.stats.endpoints import shotchartdetail
 
         response = shotchartdetail.ShotChartDetail(
+            team_id=0,
             player_id=player_id,
             season_nullable=season,
             context_measure_simple='FGA',
@@ -187,14 +188,15 @@ class ProductionNBAApiClient(NBAApiClient):
         from nba_api.stats.endpoints import synergyplaytypes
 
         response = synergyplaytypes.SynergyPlayTypes(
-            player_id_nullable=player_id,
             season=season,
             play_type_nullable=play_type,
             type_grouping_nullable='offensive' if offensive else 'defensive',
+            player_or_team_abbreviation='P',
             per_mode_simple='PerGame',
             timeout=self.timeout
         )
-        return response.get_data_frames()[0]
+        df = response.get_data_frames()[0]
+        return df[df['PLAYER_ID'] == player_id]
 
     def get_league_game_log(self, season: str, player_or_team: str = 'P') -> pd.DataFrame:
         from nba_api.stats.endpoints import leaguegamelog
