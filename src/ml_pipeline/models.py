@@ -201,9 +201,16 @@ class PropClassifier:
 
         # Use calibrator if available
         if self._calibrator is not None:
-            return self._calibrator.predict_proba(X)
+            probs = self._calibrator.predict_proba(X)
+        else:
+            probs = self.model.predict_proba(X)
 
-        return self.model.predict_proba(X)
+        # Clip to prevent false certainty from isotonic calibration boundary clamping
+        probs = np.clip(probs, 0.05, 0.95)
+        # Re-normalize rows to sum to 1
+        probs = probs / probs.sum(axis=1, keepdims=True)
+
+        return probs
 
     def calibrate(
         self,

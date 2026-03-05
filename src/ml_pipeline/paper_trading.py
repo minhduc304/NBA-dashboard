@@ -494,6 +494,61 @@ class PaperTrader:
         conn.close()
         return df
 
+    def get_top_picks(
+        self,
+        game_date: Optional[str] = None,
+        n: int = 5,
+    ) -> pd.DataFrame:
+        """
+        Extract the top N highest-conviction picks for a given game date.
+
+        Runs after log_predictions so paper_trades has today's data.
+
+        Args:
+            game_date: Date to pull picks for (default: today)
+            n: Number of top picks to return
+
+        Returns:
+            DataFrame of top picks sorted by ranking score
+        """
+        if game_date is None:
+            game_date = datetime.now().strftime('%Y-%m-%d')
+
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query('''
+            SELECT player_name, stat_type, line, sportsbook,
+                   regressor_pred, classifier_prob, classifier_pred,
+                   over_odds, under_odds, expected_value
+            FROM paper_trades
+            WHERE game_date = ?
+            AND classifier_prob IS NOT NULL
+        ''', conn, params=(game_date,))
+        conn.close()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # Confidence = distance from 0.5 (direction-agnostic)
+        df['confidence'] = (df['classifier_prob'] - 0.5).abs()
+
+        # Min 60% confidence floor
+        df = df[df['confidence'] >= 0.10]
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # Rank: 60% confidence + 40% EV (normalized)
+        ev = df['expected_value'].fillna(0)
+        ev_norm = (ev - ev.min()) / (ev.max() - ev.min() + 1e-9)
+        conf_norm = (df['confidence'] - df['confidence'].min()) / (df['confidence'].max() - df['confidence'].min() + 1e-9)
+        df['rank_score'] = 0.6 * conf_norm + 0.4 * ev_norm
+
+        # Deduplicate: keep best line per player+stat
+        df = df.sort_values('rank_score', ascending=False)
+        df = df.drop_duplicates(subset=['player_name', 'stat_type'], keep='first')
+
+        return df.nlargest(n, 'rank_score')
+
     def update_results(
         self,
         game_date: Optional[str] = None,
@@ -735,6 +790,27 @@ class PaperTrader:
         ''', params)
         by_date = cursor.fetchall()
 
+        # Accuracy by confidence tier
+        cursor.execute(f'''
+            SELECT
+                CASE
+                    WHEN ABS(classifier_prob - 0.5) >= 0.40 THEN '90%+'
+                    WHEN ABS(classifier_prob - 0.5) >= 0.30 THEN '80-90%'
+                    WHEN ABS(classifier_prob - 0.5) >= 0.20 THEN '70-80%'
+                    WHEN ABS(classifier_prob - 0.5) >= 0.15 THEN '65-70%'
+                    WHEN ABS(classifier_prob - 0.5) >= 0.10 THEN '60-65%'
+                    WHEN ABS(classifier_prob - 0.5) >= 0.05 THEN '55-60%'
+                    ELSE '50-55%'
+                END as tier,
+                COUNT(*) as n,
+                AVG(classifier_correct) as accuracy
+            FROM paper_trades
+            WHERE {where_sql}
+            GROUP BY tier
+            ORDER BY MIN(ABS(classifier_prob - 0.5)) DESC
+        ''', params)
+        by_confidence = cursor.fetchall()
+
         # Calculate ROI using actual odds when available, fallback to -110
         roi_query = f'''
             SELECT
@@ -768,6 +844,7 @@ class PaperTrader:
             'by_stat_type': by_stat,
             'by_model_version': by_version,
             'by_date': by_date,
+            'by_confidence': by_confidence,
         }
 
         if verbose:
@@ -803,6 +880,13 @@ class PaperTrader:
         if results['by_stat_type']:
             for stat, total, clf_acc, reg_acc in results['by_stat_type']:
                 logger.info("  %s: %d total, Clf=%.1f%%, Reg=%.1f%%", stat, total, clf_acc * 100, reg_acc * 100)
+
+        if results.get('by_confidence'):
+            logger.info("  CONFIDENCE BREAKDOWN:")
+            logger.info("  %-10s %6s %8s", "Tier", "N", "Accuracy")
+            logger.info("  " + "-" * 28)
+            for tier, n, acc in results['by_confidence']:
+                logger.info("  %-10s %6d %7.1f%%", tier, n, acc * 100)
 
     def get_pending_count(self) -> Dict[str, int]:
         """Get count of predictions awaiting results."""
