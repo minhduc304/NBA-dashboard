@@ -89,11 +89,9 @@ class PlayerStatsCollector(BaseCollector):
         if existing and existing.games_played >= games_played:
             return Result.skipped(f"Player {player_id} already up to date ({games_played} GP)")
 
-        # Step 2: Fetch Q1 stats
-        q1_stats = self._fetch_period_stats(player_id, period=1)
-
-        # Step 3: Fetch first half stats
-        first_half_stats = self._fetch_half_stats(player_id, "First Half")
+        # Step 2 & 3: Quarter/half splits temporarily disabled — endpoint returning 500s
+        q1_stats = None
+        first_half_stats = None
 
         # Step 4: Get player info (name, team ID, position)
         team_id, position, player_name = self._fetch_player_info(player_id)
