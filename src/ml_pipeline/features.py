@@ -759,9 +759,6 @@ class FeatureEngineer:
             'rest_disparity',
             'opponent_b2b_flag',
 
-            # Temporal
-            'day_of_week',
-
             # Interactions (non-line based)
             'home_rested',
             'away_b2b',
@@ -803,7 +800,6 @@ class FeatureEngineer:
             List of odds-related column names
         """
         return [
-            'vig_pct',           # Higher vig = book less confident in line
             'over_fair_prob',    # No-vig probability of over (book's true estimate)
         ]
 
@@ -839,17 +835,14 @@ class FeatureEngineer:
         """
         Return opponent-adjusted features for the classifier.
 
-        Only includes the 2 key features that showed improvement in CV testing:
-        - adjusted_edge: Our projected edge vs the line (positive = value on over)
-        - line_vs_adjusted: Line minus adjusted projection
-
-        The intermediate features (opp_def_factor, pace_factor, individual projections)
-        are still computed internally but excluded from the model to prevent overfitting
-        with limited training data.
+        Stat-specific: defense features help points and rebounds but hurt assists
+        (assists depend more on lineup dynamics than opponent defense quality).
 
         Returns:
             List of opponent-adjusted feature column names
         """
+        if self.stat_type == 'assists':
+            return []
         return [
             'adjusted_edge',        # Adjusted projection minus line (key signal)
             'line_vs_adjusted',     # Line minus adjusted projection
@@ -883,13 +876,7 @@ class FeatureEngineer:
             'opp_pace',
             'opp_def_rating',
             'pace_diff',
-        ] + self.get_line_features() + [
-            # Sportsbook indicators (to learn which books are sharp/soft)
-            'book_underdog',
-            'book_fanduel',
-            'book_draftkings',
-            'book_other',
-        ] + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features() + self.get_minutes_features()
+        ] + self.get_line_features() + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features() + self.get_minutes_features()
 
     def get_available_features(self, df: pd.DataFrame) -> List[str]:
         """
