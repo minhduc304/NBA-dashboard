@@ -353,13 +353,13 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
             cursor.execute('''
                 INSERT INTO team_defensive_play_types (
                     team_id, season, play_type,
-                    poss_per_game, ppp_allowed, fg_pct_allowed,
+                    poss_per_game, ppp, fg_pct,
                     games_played, last_updated
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(team_id, season, play_type) DO UPDATE SET
                     poss_per_game = excluded.poss_per_game,
-                    ppp_allowed = excluded.ppp_allowed,
-                    fg_pct_allowed = excluded.fg_pct_allowed,
+                    ppp = excluded.ppp,
+                    fg_pct = excluded.fg_pct,
                     games_played = excluded.games_played,
                     last_updated = CURRENT_TIMESTAMP
             ''', (
