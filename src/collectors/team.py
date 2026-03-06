@@ -3,6 +3,7 @@
 import logging
 from typing import List, Dict, Optional
 import time
+from datetime import datetime, date
 import sqlite3
 
 from nba_api.stats.endpoints import leaguedashteamstats
@@ -44,7 +45,23 @@ class TeamDefenseCollector(BaseCollector):
     def should_update(self, team_id: int) -> bool:
         """Check if team defense data needs updating."""
         existing = self.repository.get_by_team(team_id, self.season)
-        return existing is None
+        if existing is None:
+            return True
+        conn = sqlite3.connect(self.repository.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT MAX(last_updated)
+            FROM team_defensive_zones
+            WHERE team_id = ? AND season = ?
+        ''', (team_id, self.season))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row[0] is None:
+            return True
+
+        last_updated = datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S').date()
+        return last_updated < date.today()
 
     def collect(self, team_id: int) -> Result[TeamDefenseZones]:
         """Collect defensive zone stats for a team."""

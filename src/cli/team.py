@@ -29,19 +29,19 @@ def defense(ctx):
     click.echo("=" * 60)
     click.echo(f"Delay: {delay}s")
 
+    from datetime import datetime, date
+
     conn = sqlite3.connect(collector.db_path)
     cursor = conn.cursor()
 
-    # Compare team pace update time vs defensive zones update time
     cursor.execute("""
-        SELECT t.team_id, t.full_name, tp.last_updated as pace_updated,
+        SELECT t.team_id, t.full_name,
                MAX(tdz.last_updated) as def_zones_updated
         FROM teams t
-        LEFT JOIN team_pace tp ON t.team_id = tp.team_id AND tp.season = ?
         LEFT JOIN team_defensive_zones tdz
             ON t.team_id = tdz.team_id AND tdz.season = ?
-        GROUP BY t.team_id, t.full_name, tp.last_updated
-    """, (collector.SEASON, collector.SEASON))
+        GROUP BY t.team_id, t.full_name
+    """, (collector.SEASON,))
     teams = cursor.fetchall()
     conn.close()
 
@@ -50,14 +50,16 @@ def defense(ctx):
     skipped = 0
     errors = 0
 
-    for i, (team_id, team_name, pace_updated, def_zones_updated) in enumerate(teams, 1):
+    for i, (team_id, team_name, def_zones_updated) in enumerate(teams, 1):
         click.echo(f"[{i}/{total}] {team_name}...", nl=False)
 
-        # Skip if defensive zones are up to date
-        if def_zones_updated and pace_updated and def_zones_updated >= pace_updated:
-            skipped += 1
-            click.echo(click.style(" Skipped (up to date)", fg='yellow'))
-            continue
+        # Skip if defensive zones were already collected today
+        if def_zones_updated:
+            last_updated = datetime.strptime(def_zones_updated, '%Y-%m-%d %H:%M:%S').date()
+            if last_updated >= date.today():
+                skipped += 1
+                click.echo(click.style(" Skipped (up to date)", fg='yellow'))
+                continue
 
         try:
             result = collector.team_defense_collector.collect(team_id)
