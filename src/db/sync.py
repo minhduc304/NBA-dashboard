@@ -162,9 +162,11 @@ class DatabaseSyncer:
         return report
 
     def push(self) -> None:
-        """Upload local DB to GCS."""
+        """Upload local DB to GCS. Auto-pulls first to prevent overwriting cloud data."""
         if not Path(self.db_path).exists():
             raise FileNotFoundError(f"Local DB not found: {self.db_path}")
+
+        self.pull()
 
         client = _get_gcs_client()
         bucket = client.bucket(GCS_BUCKET)

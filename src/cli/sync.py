@@ -55,6 +55,7 @@ def push(ctx):
 
     syncer = DatabaseSyncer(db_path=db_path)
     try:
+        click.echo("Auto-pulling to merge cloud data before pushing...")
         syncer.push()
         click.echo(click.style("Push complete.", fg="green"))
     except Exception as e:
