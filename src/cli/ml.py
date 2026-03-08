@@ -567,6 +567,33 @@ def error_analysis(ctx, stat, val_days, test_days):
         click.echo(click.style(f"Error: {e}", fg='red'))
 
 
+@ml.command('shap')
+@click.option('--stat', default='points', help='Stat type to analyze')
+@click.option('--val-days', default=5, type=int, help='Validation days')
+@click.option('--test-days', default=7, type=int, help='Test days')
+@click.option('--n-explain', default=5, type=int, help='Number of errors to explain')
+@click.pass_context
+def shap_analysis(ctx, stat, val_days, test_days, n_explain):
+    """SHAP-based model interpretability analysis."""
+    from src.ml_pipeline.error_analysis import run_shap_analysis, print_shap_analysis
+
+    click.echo("=" * 60)
+    click.echo("SHAP Analysis")
+    click.echo("=" * 60)
+    click.echo(f"Stat: {stat}, Val days: {val_days}, Test days: {test_days}")
+
+    try:
+        results = run_shap_analysis(
+            stat_type=stat,
+            val_days=val_days,
+            test_days=test_days,
+            n_explain=n_explain,
+        )
+        print_shap_analysis(results)
+    except Exception as e:
+        click.echo(click.style(f"Error: {e}", fg='red'))
+
+
 @ml.command()
 @click.option('--stat', multiple=True, help='Specific stat(s) to predict')
 @click.option('--min-confidence', default=0.60, help='Confidence threshold')

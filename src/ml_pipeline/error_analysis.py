@@ -11,6 +11,7 @@ Usage:
 import logging
 import numpy as np
 import pandas as pd
+import shap
 from typing import Dict, List
 
 from .config import (
@@ -543,5 +544,238 @@ def print_error_analysis(results: Dict):
                 f"{e['confidence']*100:>5.1f}% {pred_label:<6} "
                 f"{e['opponent']:<5} {loc}"
             )
+
+    print()
+
+
+# ---------------------------------------------------------------------------
+# SHAP Analysis
+# ---------------------------------------------------------------------------
+
+def run_shap_analysis(
+    stat_type: str,
+    db_path: str = DEFAULT_DB_PATH,
+    val_days: int = DEFAULT_VAL_DAYS,
+    test_days: int = DEFAULT_TEST_DAYS,
+    min_feature_importance: float = 0.01,
+    n_explain: int = 5,
+) -> Dict:
+    """
+    Train the classifier and compute SHAP values on the test set.
+
+    Returns global feature importance (mean |SHAP|), top feature interactions,
+    and per-prediction explanations for the highest-confidence errors.
+
+    Args:
+        stat_type: points, rebounds, or assists
+        n_explain: Number of high-confidence errors to explain individually
+    """
+    loader = PropDataLoader(db_path)
+    feature_eng = FeatureEngineer(stat_type)
+
+    matchup_stats = loader.get_player_vs_opponent_stats(stat_type)
+    consistency_stats = loader.get_player_consistency_stats(stat_type)
+    opp_defense = loader.get_opponent_stat_defense(stat_type)
+    pos_defense = loader.get_position_defense(stat_type)
+    player_positions = loader.get_player_position_groups()
+
+    clf_df = loader.load_training_data(stat_type)
+    if len(clf_df) == 0:
+        raise ValueError(f"No prop data found for {stat_type}")
+
+    clf_df = feature_eng.engineer_features(
+        clf_df,
+        matchup_stats=matchup_stats,
+        consistency_stats=consistency_stats,
+        opp_defense=opp_defense,
+        pos_defense=pos_defense,
+        player_positions=player_positions,
+    )
+
+    # Time-based split (same as error_analysis)
+    all_dates = sorted(clf_df['game_date'].unique())
+    total_holdout = val_days + test_days
+    train_dates = all_dates[:-total_holdout]
+    val_dates = all_dates[-total_holdout:-test_days]
+    test_dates = all_dates[-test_days:]
+
+    train_df = clf_df[clf_df['game_date'].isin(train_dates)]
+    val_df = clf_df[clf_df['game_date'].isin(val_dates)]
+    test_df = clf_df[clf_df['game_date'].isin(test_dates)]
+
+    all_features = feature_eng.get_classifier_features()
+    features = [f for f in all_features if f in clf_df.columns]
+
+    X_train = train_df[features].fillna(0).values
+    X_val = val_df[features].fillna(0).values
+    X_test = test_df[features].fillna(0).values
+    y_train = train_df['hit_over'].values
+    y_val = val_df['hit_over'].values
+    y_test = test_df['hit_over'].values
+
+    # Feature selection
+    if min_feature_importance > 0:
+        half_life = CLASSIFIER_RECENCY_HALF_LIFE.get(
+            stat_type, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT
+        )
+        weights = ModelTrainer._compute_recency_weights(
+            train_df['game_date'], half_life
+        )
+        if 'line' in train_df.columns:
+            weights = ModelTrainer._apply_line_weight_adjustment(
+                weights, train_df['line']
+            )
+
+        params = get_model_params(stat_type, 'classifier')
+        selector_clf = PropClassifier(**params)
+        selector_clf.fit(
+            X_train, y_train,
+            eval_set=(X_val, y_val),
+            feature_names=features,
+            sample_weight=weights,
+        )
+
+        selector = FeatureSelector(
+            method='importance', min_importance=min_feature_importance
+        )
+        selector.fit(
+            X_train, y_train, features,
+            model=selector_clf, task='classification',
+        )
+
+        X_train, features = selector.transform(X_train, features)
+        X_val, _ = selector.transform(X_val, [f for f in all_features if f in clf_df.columns])
+        X_test, _ = selector.transform(X_test, [f for f in all_features if f in clf_df.columns])
+
+    # Train final model
+    half_life = CLASSIFIER_RECENCY_HALF_LIFE.get(
+        stat_type, CLASSIFIER_RECENCY_HALF_LIFE_DEFAULT
+    )
+    weights = ModelTrainer._compute_recency_weights(
+        train_df['game_date'], half_life
+    )
+    if 'line' in train_df.columns:
+        weights = ModelTrainer._apply_line_weight_adjustment(
+            weights, train_df['line']
+        )
+
+    params = get_model_params(stat_type, 'classifier')
+    clf = PropClassifier(**params)
+    clf.fit(
+        X_train, y_train,
+        eval_set=(X_val, y_val),
+        feature_names=features,
+        sample_weight=weights,
+    )
+
+    # SHAP analysis using TreeExplainer on the raw XGBoost model
+    explainer = shap.TreeExplainer(clf.model)
+    shap_values = explainer.shap_values(X_test)
+
+    # Global importance: mean |SHAP| per feature
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    global_importance = sorted(
+        zip(features, mean_abs_shap),
+        key=lambda x: -x[1],
+    )
+
+    # Predictions and metadata for explanations
+    proba = clf.predict_proba(X_test)[:, 1]
+    preds = clf.predict(X_test)
+    confidence = np.where(proba >= 0.5, proba, 1 - proba)
+    correct = (preds == y_test).astype(int)
+
+    # Find high-confidence errors to explain
+    test_meta = test_df[['player_name', 'game_date', 'line', 'actual_value',
+                          'opponent_abbr', 'is_home', 'hit_over']].copy()
+    test_meta = test_meta.reset_index(drop=True)
+    test_meta['prob_over'] = proba
+    test_meta['confidence'] = confidence
+    test_meta['correct'] = correct
+    test_meta['predicted_over'] = preds
+
+    error_mask = test_meta['correct'] == 0
+    error_indices = test_meta[error_mask].sort_values(
+        'confidence', ascending=False
+    ).head(n_explain).index.tolist()
+
+    # Build per-prediction explanations
+    explanations = []
+    for idx in error_indices:
+        row = test_meta.iloc[idx]
+        sv = shap_values[idx]
+        fv = X_test[idx]
+
+        # Top 5 features driving this prediction
+        top_indices = np.argsort(np.abs(sv))[::-1][:5]
+        drivers = [
+            {
+                'feature': features[i],
+                'shap_value': float(sv[i]),
+                'feature_value': float(fv[i]),
+            }
+            for i in top_indices
+        ]
+
+        explanations.append({
+            'player_name': row['player_name'],
+            'game_date': str(row['game_date']),
+            'line': float(row['line']),
+            'actual_value': float(row['actual_value']),
+            'prob_over': float(row['prob_over']),
+            'confidence': float(row['confidence']),
+            'predicted_over': bool(row['predicted_over']),
+            'opponent': row['opponent_abbr'],
+            'is_home': bool(row['is_home']),
+            'drivers': drivers,
+        })
+
+    return {
+        'stat_type': stat_type,
+        'n_features': len(features),
+        'test_size': len(X_test),
+        'test_start': str(test_dates[0]),
+        'test_end': str(test_dates[-1]),
+        'base_value': float(explainer.expected_value),
+        'global_importance': global_importance,
+        'explanations': explanations,
+    }
+
+
+def print_shap_analysis(results: Dict):
+    """Print a formatted SHAP analysis report."""
+    stat = results['stat_type']
+    print(f"\n{'=' * 60}")
+    print(f"SHAP Analysis: {stat}")
+    print(f"{'=' * 60}")
+    print(f"Test set: {results['test_start']} to {results['test_end']} (N={results['test_size']})")
+    print(f"Features: {results['n_features']}")
+    print(f"Base value (avg log-odds): {results['base_value']:.4f}")
+
+    # Global importance
+    print(f"\nGLOBAL FEATURE IMPORTANCE (mean |SHAP|):")
+    print(f"  {'Feature':<30} {'Importance':>10}")
+    print(f"  {'-'*30} {'-'*10}")
+    for feat, imp in results['global_importance']:
+        bar = '#' * int(imp * 50 / results['global_importance'][0][1])
+        print(f"  {feat:<30} {imp:>10.4f}  {bar}")
+
+    # Per-prediction explanations
+    explanations = results.get('explanations', [])
+    if explanations:
+        print(f"\nTOP {len(explanations)} HIGH-CONFIDENCE ERROR EXPLANATIONS:")
+        for i, ex in enumerate(explanations, 1):
+            pred_label = 'OVER' if ex['predicted_over'] else 'UNDER'
+            actual_label = 'OVER' if ex['actual_value'] > ex['line'] else 'UNDER'
+            loc = 'H' if ex['is_home'] else 'A'
+
+            print(f"\n  [{i}] {ex['player_name']} vs {ex['opponent']} ({loc}) - {ex['game_date']}")
+            print(f"      Line: {ex['line']:.1f}  Actual: {ex['actual_value']:.1f}  "
+                  f"Predicted: {pred_label} ({ex['confidence']*100:.1f}%)  Actual: {actual_label}")
+            print(f"      Top drivers:")
+            for d in ex['drivers']:
+                direction = 'OVER' if d['shap_value'] > 0 else 'UNDER'
+                print(f"        {d['feature']:<28} = {d['feature_value']:>8.2f}  "
+                      f"push {direction:<5} ({d['shap_value']:+.4f})")
 
     print()
