@@ -127,7 +127,7 @@ class ModelTrainer:
         Returns:
             numpy array of weights in [min_weight, 1.0]
         """
-        dates = pd.to_datetime(game_dates)
+        dates = pd.to_datetime(game_dates, format='mixed')
         max_date = dates.max()
         days_ago = (max_date - dates).dt.days.values.astype(float)
         decay_rate = np.log(2) / half_life_days
