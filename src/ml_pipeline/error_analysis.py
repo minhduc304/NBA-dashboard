@@ -730,6 +730,37 @@ def run_shap_analysis(
             'drivers': drivers,
         })
 
+    # Partial dependence for top features (by SHAP importance)
+    n_pdp = min(8, len(global_importance))
+    top_features = [feat for feat, _ in global_importance[:n_pdp]]
+    pdp_results = []
+
+    for feat_name in top_features:
+        feat_idx = features.index(feat_name)
+        feat_vals = X_test[:, feat_idx]
+        non_zero = feat_vals[feat_vals != 0]
+        if len(non_zero) < 10:
+            continue
+
+        # Create grid of values across the feature's range
+        grid = np.linspace(np.percentile(non_zero, 5), np.percentile(non_zero, 95), 10)
+
+        # For each grid point, replace the feature value and predict
+        avg_probs = []
+        for val in grid:
+            X_modified = X_test.copy()
+            X_modified[:, feat_idx] = val
+            probs = clf.predict_proba(X_modified)[:, 1]
+            avg_probs.append(float(probs.mean()))
+
+        pdp_results.append({
+            'feature': feat_name,
+            'grid': [float(v) for v in grid],
+            'avg_prob_over': avg_probs,
+            'actual_range': (float(non_zero.min()), float(non_zero.max())),
+            'mean_value': float(non_zero.mean()),
+        })
+
     return {
         'stat_type': stat_type,
         'n_features': len(features),
@@ -739,6 +770,7 @@ def run_shap_analysis(
         'base_value': float(explainer.expected_value),
         'global_importance': global_importance,
         'explanations': explanations,
+        'pdp': pdp_results,
     }
 
 
@@ -777,5 +809,40 @@ def print_shap_analysis(results: Dict):
                 direction = 'OVER' if d['shap_value'] > 0 else 'UNDER'
                 print(f"        {d['feature']:<28} = {d['feature_value']:>8.2f}  "
                       f"push {direction:<5} ({d['shap_value']:+.4f})")
+
+    # Partial dependence plots
+    pdp_data = results.get('pdp', [])
+    if pdp_data:
+        print(f"\nPARTIAL DEPENDENCE (top {len(pdp_data)} features):")
+        print(f"  Shows avg P(OVER) as feature value changes, all else held constant.")
+
+        for pdp in pdp_data:
+            grid = pdp['grid']
+            probs = pdp['avg_prob_over']
+            prob_min = min(probs)
+            prob_max = max(probs)
+            prob_range = prob_max - prob_min
+
+            # Direction summary
+            if probs[-1] > probs[0] + 0.01:
+                trend = "higher value -> MORE OVER"
+            elif probs[-1] < probs[0] - 0.01:
+                trend = "higher value -> MORE UNDER"
+            else:
+                trend = "weak/no trend"
+
+            print(f"\n  {pdp['feature']}  ({trend})")
+            print(f"  Range: [{pdp['actual_range'][0]:.2f}, {pdp['actual_range'][1]:.2f}]  "
+                  f"Mean: {pdp['mean_value']:.2f}")
+
+            # ASCII plot
+            plot_width = 40
+            for val, prob in zip(grid, probs):
+                if prob_range > 0:
+                    bar_len = int((prob - prob_min) / prob_range * plot_width)
+                else:
+                    bar_len = plot_width // 2
+                bar = '|' + '#' * bar_len + ' ' * (plot_width - bar_len) + '|'
+                print(f"  {val:>10.2f}  {bar} {prob:.3f}")
 
     print()
