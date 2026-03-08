@@ -414,6 +414,14 @@ class FeatureEngineer:
             0
         )
 
+        # Dampen matchup features by sample size for points/assists
+        # sqrt(games) / sqrt(4): full weight at 4+ games, 71% at 2, 50% at 1
+        # Rebounds matchups are more stable (size/role-based) so no dampening
+        if self.stat_type in ('points', 'assists'):
+            dampen = np.sqrt(df['games_vs_opp'].clip(upper=4)) / np.sqrt(4)
+            df['opp_matchup_diff'] = df['opp_matchup_diff'] * dampen
+            df['opp_matchup_pct'] = df['opp_matchup_pct'] * dampen
+
         return df
 
     def _add_consistency_features(
@@ -762,10 +770,6 @@ class FeatureEngineer:
             # Interactions (non-line based)
             'home_rested',
             'away_b2b',
-
-            # Consistency features (for value prediction)
-            'coeff_of_variation',
-            'consistency_range',
         ]
 
     def get_line_features(self) -> List[str]:
@@ -822,14 +826,14 @@ class FeatureEngineer:
         """
         Return player consistency features.
 
+        Ablation testing showed these features (coeff_of_variation, consistency_range,
+        hit_rate_at_line) add zero accuracy benefit — their signal is already
+        captured by other features (line-relative stats, matchup data).
+
         Returns:
-            List of consistency-related column names
+            Empty list — consistency features disabled
         """
-        return [
-            'coeff_of_variation',   # std / mean (variance indicator)
-            'consistency_range',    # max - min in recent games
-            'hit_rate_at_line',     # Estimated hit rate at current line
-        ]
+        return []
 
     def get_opponent_defense_features(self) -> List[str]:
         """
