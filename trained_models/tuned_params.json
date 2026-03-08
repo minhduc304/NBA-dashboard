@@ -64,7 +64,28 @@
       "val_mae": 1.408309743379141,
       "test_mae": 1.3990059957499377
     },
-    "tuned_at": "2026-01-11T19:25:38.505735"
+    "tuned_at": "2026-03-08T16:02:58.170294",
+    "classifier": {
+      "best_params": {
+        "objective": "binary:logistic",
+        "eval_metric": "auc",
+        "use_label_encoder": false,
+        "random_state": 42,
+        "early_stopping_rounds": 50,
+        "max_depth": 4,
+        "learning_rate": 0.018407380176377747,
+        "subsample": 0.5411852298742501,
+        "colsample_bytree": 0.9467563763487783,
+        "min_child_weight": 2,
+        "reg_alpha": 1.9041599206119872e-05,
+        "reg_lambda": 9.245594216159139e-05,
+        "n_estimators": 476
+      },
+      "val_auc": 0.60840492383566,
+      "test_auc": 0.5446580446580447,
+      "val_accuracy": 0.5463108320251178,
+      "test_accuracy": 0.5554272517321016
+    }
   },
   "points": {
     "classifier": {
@@ -74,20 +95,20 @@
         "use_label_encoder": false,
         "random_state": 42,
         "early_stopping_rounds": 50,
-        "max_depth": 10,
-        "learning_rate": 0.022018117125406585,
-        "subsample": 0.6953050113746944,
-        "colsample_bytree": 0.8540690963193087,
-        "min_child_weight": 2,
-        "reg_alpha": 0.0004705970082782129,
-        "reg_lambda": 6.605533189094008e-06,
-        "n_estimators": 354
+        "max_depth": 8,
+        "learning_rate": 0.05001567201715737,
+        "subsample": 0.6750224363940949,
+        "colsample_bytree": 0.5339884036663103,
+        "min_child_weight": 20,
+        "reg_alpha": 1.1744084029711715e-08,
+        "reg_lambda": 0.0001653282123997987,
+        "n_estimators": 315
       },
-      "val_auc": 0.5974880221246347,
-      "test_auc": 0.5330474170415433,
-      "val_accuracy": 0.5382087099424815,
-      "test_accuracy": 0.5247042449547669
+      "val_auc": 0.5770046599732307,
+      "test_auc": 0.496577440686202,
+      "val_accuracy": 0.5461956521739131,
+      "test_accuracy": 0.514161220043573
     },
-    "tuned_at": "2026-03-02T18:53:54.338564"
+    "tuned_at": "2026-03-08T16:05:43.526558"
   }
 }
