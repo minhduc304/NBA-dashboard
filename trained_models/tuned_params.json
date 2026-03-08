@@ -64,27 +64,6 @@
       "val_mae": 1.408309743379141,
       "test_mae": 1.3990059957499377
     },
-    "classifier": {
-      "best_params": {
-        "objective": "binary:logistic",
-        "eval_metric": "auc",
-        "use_label_encoder": false,
-        "random_state": 42,
-        "early_stopping_rounds": 50,
-        "max_depth": 10,
-        "learning_rate": 0.010139048090380883,
-        "subsample": 0.6538471057251313,
-        "colsample_bytree": 0.5089809378074098,
-        "min_child_weight": 1,
-        "reg_alpha": 1.475649304728376,
-        "reg_lambda": 4.922653156888222,
-        "n_estimators": 709
-      },
-      "val_auc": 0.6520500091928663,
-      "test_auc": 0.553448275862069,
-      "val_accuracy": 0.5311004784688995,
-      "test_accuracy": 0.40816326530612246
-    },
     "tuned_at": "2026-01-11T19:25:38.505735"
   },
   "points": {
