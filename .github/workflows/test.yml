@@ -22,6 +22,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          cache: 'pip'
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ -v --tb=short
+
+      - name: Cache virtualenv 
+        uses: actions/cache@v4
+        id: cache-venv
+        with: 
+          path: .venv
+          key: venv-${{ runner.os }}-py3.12-${{ hashFiles('requirements.txt') }}
+
+      - name: Instal dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: | 
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -v --tb=short
