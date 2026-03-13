@@ -100,8 +100,10 @@ The project uses a unified CLI interface via `./nba`:
 ```bash
 ./nba player update <name>      # Update single player stats
 ./nba player game-logs          # Collect game logs
-./nba player zones              # Collect shooting/assist zones
 ./nba player play-types         # Collect play type data
+./nba player assist-zones       # Collect assist zones for all players (incremental).
+./nba rolling-stats             # Compute rolling statistics (L5, L10, L20 averages).
+./nba shooting-zones            # Collect shooting zones for all playe
 ```
 
 ### Team Commands
@@ -128,6 +130,10 @@ The project uses a unified CLI interface via `./nba`:
 ./nba ml tune                   # Hyperparameter tuning (Optuna)
 ./nba ml paper status           # Paper trading status
 ./nba ml paper report           # Paper trading performance report
+./nba ml cv                     # Run time-series cross-validation for reliable performance estimates
+./nba ml error-analysis         # Analyze where the classifier fails across multiple dimensions.
+./nba ml shap                   # SHAP-based model interpretability analysis.
+./nba ml learning-curve        # Run learning curve analysis to diagnose data vs model limitations.
 ```
 
 ### Scraping Commands
@@ -136,6 +142,14 @@ The project uses a unified CLI interface via `./nba`:
 ./nba scrape underdog           # Underdog Fantasy props
 ./nba scrape odds-api           # The Odds API props
 ./nba scrape prizepicks         # PrizePicks props
+./nba scrape no-odds            # Underdog + Prizepicks only (skip Odds API)
+```
+
+### Cloud DB Syncing Commands
+```bash
+./nba sync pull                 # Merge cloud DB into local (cloud-managed tables only).
+./nba sync push                 # Pulls first (to avoid overriding cloud db), then uploads local DB to cloud (GCS).
+./nba sync status               # Show row counts (and differences with local tables) for cloud-managed tables
 ```
 
 ### Global Options
