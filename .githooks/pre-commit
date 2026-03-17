@@ -1,0 +1,37 @@
+#!/bin/bash
+# Pre-commit hook: block commits that regress ML model quality.
+#
+# Runs automatically when trained_models/*.joblib files are staged.
+# Extracts HEAD versions as the baseline, compares against staged candidates.
+# Exits 1 (blocks commit) if any stat regresses beyond tolerance.
+#
+# Bypass only if you understand the regression: git commit --no-verify
+
+set -e
+
+STAGED_MODELS=$(git diff --cached --name-only | grep "^trained_models/.*_classifier\.joblib$" || true)
+
+if [ -z "$STAGED_MODELS" ]; then
+    exit 0  # No classifier models staged — nothing to check
+fi
+
+echo "Model files staged — running regression gate..."
+
+# Extract HEAD classifier models to a temp directory (these are the baseline)
+BASELINE_DIR=$(mktemp -d)
+trap "rm -rf $BASELINE_DIR" EXIT
+
+ANY_BASELINE=0
+for f in $STAGED_MODELS; do
+    if git show "HEAD:$f" > "$BASELINE_DIR/$(basename $f)" 2>/dev/null; then
+        ANY_BASELINE=1
+    fi
+done
+
+if [ "$ANY_BASELINE" -eq 0 ]; then
+    echo "No baseline models in HEAD (first commit?) — skipping gate."
+    exit 0
+fi
+
+# Run comparison: baseline (HEAD) vs candidate (working tree / staged)
+venv/bin/python ./nba ml check-regression --baseline-dir "$BASELINE_DIR"

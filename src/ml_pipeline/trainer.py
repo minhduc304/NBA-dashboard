@@ -196,6 +196,7 @@ class ModelTrainer:
         historical_test_days: int = 30,
         calibrate: bool = True,
         calibration_method: Literal['isotonic', 'sigmoid'] = 'isotonic',
+        compare_baseline: bool = False,
     ) -> Dict:
         """
         Train both regressor and classifier with proper train/val/test split.
@@ -480,6 +481,16 @@ class ModelTrainer:
         results['feature_importance_regressor'] = self.regressor.get_feature_importance()
         results['feature_importance_classifier'] = self.classifier.get_feature_importance()
 
+        # Baseline comparison — evaluate saved model on same test window before overwriting
+        if compare_baseline:
+            results['baseline_comparison'] = self._compare_with_baseline(
+                clf_test_df, self._classifier_features, y_test_clf
+            )
+
+        # Cache test set for fast pre-commit hook comparison (no DB re-query needed)
+        self._clf_test_X = X_test_clf
+        self._clf_test_y = y_test_clf
+
         # Metadata
         results['stat_type'] = self.stat_type
         results['regressor_features'] = self._regressor_features
@@ -498,6 +509,83 @@ class ModelTrainer:
         }
 
         return results
+
+    def _compare_with_baseline(
+        self,
+        test_df: pd.DataFrame,
+        candidate_features: list,
+        y_test: np.ndarray,
+        baseline_dir: Optional[str] = None,
+    ) -> Dict:
+        """
+        Evaluate the currently saved classifier on the same test window used
+        for the candidate model. Returns a comparison dict with pass/fail verdict.
+
+        Pass criteria (per stat):
+          - Accuracy: candidate >= baseline - 0.5%
+          - Brier score: candidate <= baseline + 0.02 (lower is better)
+
+        Args:
+            baseline_dir: Directory to load baseline model from. Defaults to
+                          self.model_dir (i.e. the currently saved production model).
+        """
+        load_dir = baseline_dir if baseline_dir else self.model_dir
+        baseline_path = os.path.join(load_dir, f'{self.stat_type}_classifier.joblib')
+        if not os.path.exists(baseline_path):
+            return {'available': False, 'reason': 'No saved model to compare against'}
+
+        try:
+            baseline_data = joblib.load(baseline_path)
+            baseline_clf = baseline_data['model']
+            baseline_features = baseline_data['feature_columns']
+        except Exception as e:
+            return {'available': False, 'reason': f'Could not load baseline: {e}'}
+
+        # Build test matrix for baseline — use its own feature set, pad missing with 0
+        baseline_cols = [f for f in baseline_features if f in test_df.columns]
+        X_baseline = test_df[baseline_cols].fillna(0).values
+
+        try:
+            baseline_proba = baseline_clf.predict_proba(X_baseline)
+            baseline_over_proba = baseline_proba[:, 1] if baseline_proba.ndim > 1 else baseline_proba
+        except Exception as e:
+            return {'available': False, 'reason': f'Baseline inference failed: {e}'}
+
+        baseline_pred = (baseline_over_proba > 0.5).astype(int)
+        baseline_acc = float((baseline_pred == y_test).mean())
+        baseline_brier = float(np.mean((baseline_over_proba - y_test) ** 2))
+
+        # Candidate metrics (already computed, recompute here for apples-to-apples)
+        candidate_cols = [f for f in candidate_features if f in test_df.columns]
+        X_candidate = test_df[candidate_cols].fillna(0).values
+        candidate_proba = self.classifier.predict_proba(X_candidate)
+        candidate_over_proba = candidate_proba[:, 1] if candidate_proba.ndim > 1 else candidate_proba
+        candidate_pred = (candidate_over_proba > 0.5).astype(int)
+        candidate_acc = float((candidate_pred == y_test).mean())
+        candidate_brier = float(np.mean((candidate_over_proba - y_test) ** 2))
+
+        acc_delta = candidate_acc - baseline_acc
+        brier_delta = candidate_brier - baseline_brier  # negative = better
+
+        acc_pass = acc_delta >= -0.005
+        brier_pass = brier_delta <= 0.02
+        verdict = 'PASS' if (acc_pass and brier_pass) else 'REGRESSION'
+
+        return {
+            'available': True,
+            'n_test': len(y_test),
+            'baseline_features': len(baseline_features),
+            'candidate_features': len(candidate_features),
+            'baseline_accuracy': baseline_acc,
+            'candidate_accuracy': candidate_acc,
+            'accuracy_delta': acc_delta,
+            'baseline_brier': baseline_brier,
+            'candidate_brier': candidate_brier,
+            'brier_delta': brier_delta,
+            'acc_pass': acc_pass,
+            'brier_pass': brier_pass,
+            'verdict': verdict,
+        }
 
     def _evaluate(
         self,
@@ -567,6 +655,11 @@ class ModelTrainer:
             'trained_at': datetime.now().isoformat(),
             'calibrated': self.classifier.is_calibrated,
             'calibration_method': self.classifier.calibration_method,
+            'test_data': {
+                'X': getattr(self, '_clf_test_X', None),
+                'y': getattr(self, '_clf_test_y', None),
+                'features': self._classifier_features,
+            },
         }
 
         joblib.dump(reg_data, reg_path)
@@ -607,6 +700,128 @@ class ModelTrainer:
         self._classifier_features = clf_data['feature_columns']
 
         return True
+
+
+def compare_saved_models(
+    stat_type: str,
+    baseline_dir: str,
+    candidate_dir: str = DEFAULT_MODEL_DIR,
+    db_path: str = DEFAULT_DB_PATH,
+    test_days: int = DEFAULT_TEST_DAYS,
+) -> Dict:
+    """
+    Compare two saved classifier models on the same held-out test window.
+
+    Loads both models from disk (no retraining). Used by the pre-commit hook
+    to gate model commits without requiring a full retrain.
+
+    Args:
+        stat_type: e.g. 'points', 'rebounds', 'assists'
+        baseline_dir: Directory containing the baseline .joblib files (e.g. HEAD models)
+        candidate_dir: Directory containing the candidate .joblib files (default: trained_models/)
+        db_path: Path to SQLite database for test data
+        test_days: Number of most recent game dates to use as test window
+
+    Returns:
+        Comparison dict with accuracy, Brier score, and verdict.
+    """
+    from .data_loader import PropDataLoader
+    from .features import FeatureEngineer
+
+    baseline_path = os.path.join(baseline_dir, f'{stat_type}_classifier.joblib')
+    candidate_path = os.path.join(candidate_dir, f'{stat_type}_classifier.joblib')
+
+    if not os.path.exists(baseline_path):
+        return {'available': False, 'reason': f'No baseline model at {baseline_path}'}
+    if not os.path.exists(candidate_path):
+        return {'available': False, 'reason': f'No candidate model at {candidate_path}'}
+
+    try:
+        baseline_data = joblib.load(baseline_path)
+        candidate_data = joblib.load(candidate_path)
+    except Exception as e:
+        return {'available': False, 'reason': f'Failed to load models: {e}'}
+
+    baseline_clf = baseline_data['model']
+    baseline_features = baseline_data['feature_columns']
+    candidate_clf = candidate_data['model']
+    candidate_features = candidate_data['feature_columns']
+
+    # Fast path: use test data cached inside the candidate joblib (saved at train time).
+    # This avoids re-running feature engineering and all auxiliary DB queries.
+    candidate_test = candidate_data.get('test_data', {})
+    cached_X = candidate_test.get('X')
+    cached_y = candidate_test.get('y')
+    cached_features = candidate_test.get('features', candidate_features)
+
+    if cached_X is not None and cached_y is not None:
+        # Both models evaluated on the same cached test window — fair comparison, no DB needed
+        test_feature_df = pd.DataFrame(cached_X, columns=cached_features)
+        y_test = cached_y
+    else:
+        # Fallback: load from DB (models saved before this feature was added)
+        try:
+            loader = PropDataLoader(db_path)
+            engineer = FeatureEngineer(stat_type)
+
+            from datetime import datetime, timedelta
+            min_date = (datetime.now() - timedelta(days=test_days * 2)).strftime('%Y-%m-%d')
+
+            matchup_stats = loader.get_player_vs_opponent_stats(stat_type)
+            consistency_stats = loader.get_player_consistency_stats(stat_type)
+            opp_defense = loader.get_opponent_stat_defense(stat_type)
+            pos_defense = loader.get_position_defense(stat_type)
+            player_positions = loader.get_player_position_groups()
+
+            clf_df = loader.load_training_data(stat_type, min_date=min_date)
+            clf_df = engineer.engineer_features(
+                clf_df,
+                matchup_stats=matchup_stats,
+                consistency_stats=consistency_stats,
+                opp_defense=opp_defense,
+                pos_defense=pos_defense,
+                player_positions=player_positions,
+            )
+        except Exception as e:
+            return {'available': False, 'reason': f'Failed to load test data: {e}'}
+
+        clf_dates = sorted(clf_df['game_date'].unique())
+        test_df_raw = clf_df[clf_df['game_date'].isin(clf_dates[-test_days:])]
+        test_feature_df = test_df_raw
+        y_test = test_df_raw['hit_over'].values
+
+    def _run(clf, features):
+        cols = [f for f in features if f in test_feature_df.columns]
+        X = test_feature_df[cols].fillna(0).values
+        proba = clf.predict_proba(X)
+        over_proba = proba[:, 1] if proba.ndim > 1 else proba
+        pred = (over_proba > 0.5).astype(int)
+        acc = float((pred == y_test).mean())
+        brier = float(np.mean((over_proba - y_test) ** 2))
+        return acc, brier
+
+    try:
+        baseline_acc, baseline_brier = _run(baseline_clf, baseline_features)
+        candidate_acc, candidate_brier = _run(candidate_clf, candidate_features)
+    except Exception as e:
+        return {'available': False, 'reason': f'Inference failed: {e}'}
+
+    acc_delta = candidate_acc - baseline_acc
+    brier_delta = candidate_brier - baseline_brier
+
+    return {
+        'available': True,
+        'n_test': len(y_test),
+        'baseline_accuracy': baseline_acc,
+        'candidate_accuracy': candidate_acc,
+        'accuracy_delta': acc_delta,
+        'baseline_brier': baseline_brier,
+        'candidate_brier': candidate_brier,
+        'brier_delta': brier_delta,
+        'acc_pass': acc_delta >= -0.005,
+        'brier_pass': brier_delta <= 0.02,
+        'verdict': 'PASS' if (acc_delta >= -0.005 and brier_delta <= 0.02) else 'REGRESSION',
+    }
 
 
 def train_all_models(

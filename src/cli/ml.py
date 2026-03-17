@@ -9,6 +9,8 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Optional
 
+from src.ml_pipeline.config import DEFAULT_VAL_DAYS, DEFAULT_TEST_DAYS
+
 logger = logging.getLogger(__name__)
 
 
@@ -310,24 +312,74 @@ def _check_and_retrain():
     if needs_retrain:
         click.echo(f"Retraining triggered: {reason}")
         from src.ml_pipeline.trainer import ModelTrainer
+        regressions = []
         for stat_type in PRIORITY_STATS:
             click.echo(f"  Training {stat_type}...")
             trainer = ModelTrainer(stat_type)
-            trainer.train()
+            train_results = trainer.train(compare_baseline=True)
+            cmp = train_results.get('baseline_comparison', {})
+            if cmp.get('available') and cmp.get('verdict') == 'REGRESSION':
+                regressions.append(stat_type)
+                click.echo(f"  WARNING: {stat_type} regressed vs baseline — skipping save")
+            else:
+                trainer.save_models()
         result['retrained'] = True
+        result['regressions'] = regressions
 
     return result
 
 
+def _print_comparison_table(comparison_results: dict):
+    """Print baseline vs candidate comparison table with pass/fail verdict."""
+    click.echo("\n" + "=" * 60)
+    click.echo("Baseline Comparison")
+    click.echo("=" * 60)
+
+    header = f"  {'Stat':<12} {'Baseline Acc':>12} {'New Acc':>10} {'Delta':>8} {'Brier Δ':>8} {'Verdict':<12}"
+    click.echo(header)
+    click.echo("  " + "-" * 58)
+
+    overall_pass = True
+    for stat_type, cmp in comparison_results.items():
+        if not cmp.get('available'):
+            click.echo(f"  {stat_type:<12} {'N/A (no baseline)':>40}")
+            continue
+
+        acc_delta = cmp['accuracy_delta']
+        brier_delta = cmp['brier_delta']
+        verdict = cmp['verdict']
+        is_pass = verdict == 'PASS'
+        if not is_pass:
+            overall_pass = False
+
+        delta_str = f"{acc_delta:+.1%}"
+        brier_str = f"{brier_delta:+.3f}"
+        verdict_styled = click.style(verdict, fg='green' if is_pass else 'red')
+
+        click.echo(
+            f"  {stat_type:<12} {cmp['baseline_accuracy']:>11.1%} {cmp['candidate_accuracy']:>10.1%}"
+            f" {delta_str:>8} {brier_str:>8}  {verdict_styled}"
+        )
+
+    click.echo("")
+    if overall_pass:
+        click.echo(click.style("  VERDICT: PASS — candidate models are safe to commit.", fg='green', bold=True))
+    else:
+        click.echo(click.style("  VERDICT: REGRESSION DETECTED — review before committing.", fg='red', bold=True))
+        click.echo("  Regressed stats failed accuracy (< -0.5pp) or Brier score (> +0.02) threshold.")
+    click.echo("=" * 60)
+
+
 @ml.command()
 @click.option('--stat', multiple=True, help='Specific stat(s) to train')
-@click.option('--val-days', default=2, help='Validation days')
-@click.option('--test-days', default=2, help='Test days')
+@click.option('--val-days', default=DEFAULT_VAL_DAYS, help='Validation days')
+@click.option('--test-days', default=DEFAULT_TEST_DAYS, help='Test days')
 @click.option('--no-save', is_flag=True, help='Don\'t save models')
 @click.option('--use-tuned/--no-tuned', default=True, help='Use tuned hyperparameters')
+@click.option('--compare/--no-compare', default=True, help='Compare against saved baseline models')
 @click.option('--list', '-l', 'list_stats', is_flag=True, help='List available stat types')
 @click.pass_context
-def train(ctx, stat, val_days, test_days, no_save, use_tuned, list_stats):
+def train(ctx, stat, val_days, test_days, no_save, use_tuned, compare, list_stats):
     """Train ML models for prop predictions."""
     from src.ml_pipeline.data_loader import PropDataLoader
     from src.ml_pipeline.config import PRIORITY_STATS
@@ -350,19 +402,86 @@ def train(ctx, stat, val_days, test_days, no_save, use_tuned, list_stats):
     click.echo(f"Stats: {', '.join(stats_to_train)}")
     click.echo(f"Validation days: {val_days}, Test days: {test_days}")
     click.echo(f"Use tuned params: {use_tuned}")
+    if compare:
+        click.echo("Baseline comparison: ON")
 
     from src.ml_pipeline.trainer import ModelTrainer
 
+    comparison_results = {}
     for stat_type in stats_to_train:
         click.echo(f"\n--- Training {stat_type} ---")
         try:
             trainer = ModelTrainer(stat_type)
-            trainer.train()
+            results = trainer.train(
+                val_days=val_days,
+                test_days=test_days,
+                compare_baseline=compare,
+            )
+            cmp = results.get('baseline_comparison', {})
             if not no_save:
-                trainer.save_models()
-            click.echo(click.style(f"  {stat_type}: OK", fg='green'))
+                if cmp.get('available') and cmp.get('verdict') == 'REGRESSION':
+                    click.echo(click.style(
+                        f"  {stat_type}: REGRESSION — model NOT saved (use --no-compare to override)",
+                        fg='yellow'
+                    ))
+                else:
+                    trainer.save_models()
+                    click.echo(click.style(f"  {stat_type}: OK", fg='green'))
+            else:
+                click.echo(click.style(f"  {stat_type}: OK", fg='green'))
+            if compare and 'baseline_comparison' in results:
+                comparison_results[stat_type] = results['baseline_comparison']
         except Exception as e:
             click.echo(click.style(f"  {stat_type}: FAILED - {e}", fg='red'))
+
+    if compare and comparison_results:
+        _print_comparison_table(comparison_results)
+
+
+@ml.command('check-regression')
+@click.option('--baseline-dir', required=True, help='Directory containing baseline .joblib files')
+@click.option('--stat', multiple=True, help='Stats to check (default: all priority stats)')
+@click.pass_context
+def check_regression(ctx, baseline_dir, stat):
+    """Compare candidate models in trained_models/ against a baseline directory.
+
+    Exits 0 if all stats pass, exits 1 if any stat regresses.
+    Used by the pre-commit hook — do not remove.
+    """
+    import sys
+    from src.ml_pipeline.config import PRIORITY_STATS
+    from src.ml_pipeline.trainer import compare_saved_models
+
+    stats_to_check = list(stat) if stat else PRIORITY_STATS
+    db_path = ctx.obj.get('db') if ctx.obj else None
+
+    click.echo("=" * 60)
+    click.echo("Model Regression Check")
+    click.echo("=" * 60)
+    click.echo(f"Baseline: {baseline_dir}")
+    click.echo(f"Candidate: trained_models/")
+
+    kwargs = {'db_path': db_path} if db_path else {}
+    comparison_results = {}
+    for stat_type in stats_to_check:
+        try:
+            cmp = compare_saved_models(stat_type, baseline_dir, **kwargs)
+            comparison_results[stat_type] = cmp
+        except Exception as e:
+            click.echo(click.style(f"  {stat_type}: check failed — {e}", fg='yellow'))
+
+    if not comparison_results:
+        click.echo("No stats could be compared — skipping gate.")
+        sys.exit(0)
+
+    _print_comparison_table(comparison_results)
+
+    any_regression = any(
+        r.get('verdict') == 'REGRESSION'
+        for r in comparison_results.values()
+        if r.get('available')
+    )
+    sys.exit(1 if any_regression else 0)
 
 
 @ml.command()

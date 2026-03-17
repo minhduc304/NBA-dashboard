@@ -45,6 +45,17 @@ else
     echo "WARNING: No existing database found in GCS. Starting fresh."
 fi
 
+# Download trained models from GCS if available (overrides image-baked models)
+echo ""
+echo ">>> Checking for trained models in GCS..."
+GCS_MODELS_PATH="gs://${GCS_BUCKET}/trained_models/"
+if gsutil -q stat "${GCS_MODELS_PATH}points_classifier.joblib" 2>/dev/null; then
+    gsutil -m cp "${GCS_MODELS_PATH}*.joblib" trained_models/
+    echo "Models downloaded from GCS successfully"
+else
+    echo "No models found in GCS - using image-baked models"
+fi
+
 # Run the ML pipeline (with integrated notifications)
 echo ""
 echo ">>> Running ML pipeline..."
