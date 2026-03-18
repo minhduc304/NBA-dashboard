@@ -60,7 +60,7 @@ class PlayTypesCollector(BaseCollector):
 
         # Get stored games played from play_types
         cursor.execute("""
-            SELECT play_type, games_played
+            SELECT games_played
             FROM player_play_types
             WHERE player_id = ? AND season = ?
             LIMIT 1
@@ -71,20 +71,20 @@ class PlayTypesCollector(BaseCollector):
             conn.close()
             return True
 
-        stored_gp = self._parse_games_played(result[1])
+        stored_gp = self._parse_games_played(result[0])
 
-        # Get current games played from player_stats
         cursor.execute("""
-            SELECT games_played
-            FROM player_stats
+            SELECT COUNT(DISTINCT game_date)
+            FROM player_game_logs
             WHERE player_id = ? AND season = ?
         """, (player_id, self.season))
-        stats_result = cursor.fetchone()
+        logs_result = cursor.fetchone()
         conn.close()
 
-        current_gp = int(stats_result[0]) if stats_result and stats_result[0] else 0
+        current_gp = int(logs_result[0]) if logs_result and logs_result[0] else 0
 
-        return current_gp > stored_gp
+        # Threshold of 2 avoids false positives from 1-game Synergy API lag
+        return current_gp > stored_gp + 1
 
     def _parse_games_played(self, value) -> int:
         """Parse games_played value which may be bytes or int."""
@@ -279,17 +279,37 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
         self.delay = delay
 
     def should_update(self, team_id: int) -> bool:
-        """Check if team defensive play types need updating."""
+        """Check if team defensive play types need updating based on games played."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
         cursor.execute("""
-            SELECT 1 FROM team_defensive_play_types
+            SELECT games_played
+            FROM team_defensive_play_types
             WHERE team_id = ? AND season = ?
             LIMIT 1
         """, (team_id, self.season))
         result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return True
+
+        stored_gp = int(result[0]) if result[0] else 0
+
+        # Max games_played from player_stats is a reliable proxy for current
+        # team game count — all teams play within 1-2 games of each other
+        cursor.execute("""
+            SELECT MAX(games_played)
+            FROM player_stats
+            WHERE season = ?
+        """, (self.season,))
+        logs_result = cursor.fetchone()
         conn.close()
-        return result is None
+
+        current_gp = int(logs_result[0]) if logs_result and logs_result[0] else 0
+
+        return current_gp > stored_gp
 
     def collect(self, team_id: int) -> Result[List[Dict]]:
         """Collect defensive play type stats for a team."""

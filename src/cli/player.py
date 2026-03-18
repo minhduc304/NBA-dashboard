@@ -145,14 +145,17 @@ def play_types(ctx):
 
     # Compare stats update time vs play types update time
     cursor.execute("""
-        SELECT ps.player_id, ps.player_name, ps.last_updated as stats_updated,
-               MAX(ppt.last_updated) as pt_updated
+        SELECT ps.player_id, ps.player_name,
+               COALESCE(MAX(ppt.games_played), 0) as stored_gp,
+               COUNT(DISTINCT pgl.game_date) as logged_gp
         FROM player_stats ps
         LEFT JOIN player_play_types ppt
             ON ps.player_id = ppt.player_id AND ppt.season = ?
+        LEFT JOIN player_game_logs pgl
+            ON ps.player_id = pgl.player_id AND pgl.season = ?
         WHERE ps.season = ?
-        GROUP BY ps.player_id, ps.player_name, ps.last_updated
-    """, (collector.SEASON, collector.SEASON))
+        GROUP BY ps.player_id, ps.player_name
+    """, (collector.SEASON, collector.SEASON, collector.SEASON))
     players = cursor.fetchall()
     conn.close()
 
@@ -162,11 +165,12 @@ def play_types(ctx):
     errors = 0
     throttle = ThrottleDetector()
 
-    for i, (player_id, player_name, stats_updated, pt_updated) in enumerate(players, 1):
+    for i, (player_id, player_name, stored_gp, logged_gp) in enumerate(players, 1):
         click.echo(f"[{i}/{total}] {player_name}...", nl=False)
 
-        # Skip if play types are up to date
-        if pt_updated and stats_updated and pt_updated >= stats_updated:
+        # Skip unless player has played 2+ new games since last collection
+        # (threshold of 2 avoids false positives from 1-game Synergy API lag)
+        if logged_gp <= stored_gp + 1:
             skipped += 1
             click.echo(click.style(" Skipped (play types up to date)", fg='yellow'))
             continue
