@@ -171,11 +171,11 @@ class PlayTypesCollector(BaseCollector):
         return Result.success(all_play_types, f"Collected {len(all_play_types)} play types")
 
     def _get_current_games_played(self, player_id: int) -> Optional[int]:
-        """Get current games played from player_stats."""
+        """Get current games played from game_logs (ground truth, matches should_update comparison)."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT games_played FROM player_stats
+            SELECT COUNT(DISTINCT game_date) FROM player_game_logs
             WHERE player_id = ? AND season = ?
         """, (player_id, self.season))
         result = cursor.fetchone()
