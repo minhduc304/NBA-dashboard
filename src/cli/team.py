@@ -84,11 +84,12 @@ def defense(ctx):
 def defense_play_types(ctx):
     """Collect how teams defend against each Synergy play type (incremental).
 
-    Updates when team pace data is newer than defensive play type data.
+    Updates when stored games_played is behind current MAX(player_stats.games_played).
     """
     import sqlite3
     import time
     from src.stats_collector import NBAStatsCollector
+    from src.collectors.play_types import TeamDefensivePlayTypesCollector
 
     collector = NBAStatsCollector(db_path=ctx.obj['db'])
     delay = ctx.obj['delay']
@@ -101,41 +102,30 @@ def defense_play_types(ctx):
     conn = sqlite3.connect(collector.db_path)
     cursor = conn.cursor()
 
-    # Compare team pace update time vs defensive play types update time
-    cursor.execute("""
-        SELECT t.team_id, t.full_name, tp.last_updated as pace_updated,
-               MAX(tdpt.last_updated) as def_pt_updated
-        FROM teams t
-        LEFT JOIN team_pace tp ON t.team_id = tp.team_id AND tp.season = ?
-        LEFT JOIN team_defensive_play_types tdpt
-            ON t.team_id = tdpt.team_id AND tdpt.season = ?
-        GROUP BY t.team_id, t.full_name, tp.last_updated
-    """, (collector.SEASON, collector.SEASON))
+    cursor.execute("SELECT team_id, full_name FROM teams")
     teams = cursor.fetchall()
     conn.close()
+
+    pt_collector = TeamDefensivePlayTypesCollector(
+        db_path=collector.db_path,
+        season=collector.SEASON,
+        delay=delay,
+    )
 
     total = len(teams)
     success = 0
     skipped = 0
     errors = 0
 
-    for i, (team_id, team_name, pace_updated, def_pt_updated) in enumerate(teams, 1):
+    for i, (team_id, team_name) in enumerate(teams, 1):
         click.echo(f"[{i}/{total}] {team_name}...", nl=False)
 
-        # Skip if defensive play types are up to date
-        if def_pt_updated and pace_updated and def_pt_updated >= pace_updated:
+        if not pt_collector.should_update(team_id):
             skipped += 1
             click.echo(click.style(" Skipped (up to date)", fg='yellow'))
             continue
 
         try:
-            # Use the collector's method for single team
-            from src.collectors.play_types import TeamDefensivePlayTypesCollector
-            pt_collector = TeamDefensivePlayTypesCollector(
-                db_path=collector.db_path,
-                season=collector.SEASON,
-                delay=delay,
-            )
             result = pt_collector.collect(team_id)
             if result.is_success:
                 success += 1
