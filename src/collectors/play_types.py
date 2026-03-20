@@ -318,7 +318,7 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
         if not team_info:
             return Result.error(f"Team {team_id} not found")
 
-        team_name = team_info['full_name']
+        team_abbr = team_info['abbreviation']
 
         all_play_types = []
 
@@ -335,7 +335,7 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
                 )
 
                 df = synergy.synergy_play_type.get_data_frame()
-                team_data = df[df['TEAM_NAME'] == team_name]
+                team_data = df[df['TEAM_ABBREVIATION'] == team_abbr]
 
                 if not team_data.empty:
                     row = team_data.iloc[0]
@@ -349,19 +349,19 @@ class TeamDefensivePlayTypesCollector(BaseCollector):
                     })
 
             except Exception as e:
-                logger.debug("Error fetching defensive play type %s for team %d: %s", play_type, team_id, e)
+                logger.debug("Error fetching defensive play type %s for team %s: %s", play_type, team_abbr, e)
                 continue
 
             if i < len(PLAY_TYPES):
                 time.sleep(self.delay)
 
         if not all_play_types:
-            return Result.skipped(f"No defensive play type data for {team_name}")
+            return Result.skipped(f"No defensive play type data for {team_abbr}")
 
         # Save to database
         self._save_play_types(team_id, all_play_types)
 
-        return Result.success(all_play_types, f"Collected {len(all_play_types)} defensive play types")
+        return Result.success(all_play_types, f"Collected {len(all_play_types)} defensive play types for {team_abbr}")
 
     def _save_play_types(self, team_id: int, play_types: List[Dict]):
         """Save team defensive play type stats to database."""
