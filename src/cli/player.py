@@ -168,9 +168,7 @@ def play_types(ctx):
     for i, (player_id, player_name, stored_gp, logged_gp) in enumerate(players, 1):
         click.echo(f"[{i}/{total}] {player_name}...", nl=False)
 
-        # Skip unless player has played 2+ new games since last collection
-        # (threshold of 2 avoids false positives from 1-game Synergy API lag)
-        if logged_gp <= stored_gp + 1:
+        if logged_gp <= stored_gp:
             skipped += 1
             click.echo(click.style(" Skipped (play types up to date)", fg='yellow'))
             continue

@@ -83,8 +83,7 @@ class PlayTypesCollector(BaseCollector):
 
         current_gp = int(logs_result[0]) if logs_result and logs_result[0] else 0
 
-        # Threshold of 2 avoids false positives from 1-game Synergy API lag
-        return current_gp > stored_gp + 1
+        return current_gp > stored_gp
 
     def _parse_games_played(self, value) -> int:
         """Parse games_played value which may be bytes or int."""
