@@ -449,8 +449,9 @@ class PropDataLoader:
             MIN(pgl.{stat_col}) as min_stat_vs_opp
         FROM player_game_logs pgl
         WHERE pgl.min >= 10
+          AND pgl.season = '{CURRENT_SEASON}'
         GROUP BY pgl.player_id, pgl.opponent_abbr
-        HAVING games_vs_opp >= 2
+        HAVING games_vs_opp >= 1
         """
 
         conn = sqlite3.connect(self.db_path)
@@ -673,3 +674,4 @@ class PropDataLoader:
         conn.close()
 
         return df
+
