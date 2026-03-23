@@ -61,7 +61,6 @@ def run_error_analysis(
     opp_defense = loader.get_opponent_stat_defense(stat_type)
     pos_defense = loader.get_position_defense(stat_type)
     player_positions = loader.get_player_position_groups()
-
     # Load and engineer features (same as learning_curve.py / trainer.py)
     clf_df = loader.load_training_data(stat_type)
     if len(clf_df) == 0:
@@ -578,7 +577,6 @@ def run_shap_analysis(
     opp_defense = loader.get_opponent_stat_defense(stat_type)
     pos_defense = loader.get_position_defense(stat_type)
     player_positions = loader.get_player_position_groups()
-
     clf_df = loader.load_training_data(stat_type)
     if len(clf_df) == 0:
         raise ValueError(f"No prop data found for {stat_type}")

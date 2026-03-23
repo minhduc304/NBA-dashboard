@@ -377,9 +377,10 @@ def _print_comparison_table(comparison_results: dict):
 @click.option('--no-save', is_flag=True, help='Don\'t save models')
 @click.option('--use-tuned/--no-tuned', default=True, help='Use tuned hyperparameters')
 @click.option('--compare/--no-compare', default=True, help='Compare against saved baseline models')
+@click.option('--classifier-only', is_flag=True, help='Only train/save classifiers, skip regressors')
 @click.option('--list', '-l', 'list_stats', is_flag=True, help='List available stat types')
 @click.pass_context
-def train(ctx, stat, val_days, test_days, no_save, use_tuned, compare, list_stats):
+def train(ctx, stat, val_days, test_days, no_save, use_tuned, compare, classifier_only, list_stats):
     """Train ML models for prop predictions."""
     from src.ml_pipeline.data_loader import PropDataLoader
     from src.ml_pipeline.config import PRIORITY_STATS
@@ -416,6 +417,7 @@ def train(ctx, stat, val_days, test_days, no_save, use_tuned, compare, list_stat
                 val_days=val_days,
                 test_days=test_days,
                 compare_baseline=compare,
+                classifier_only=classifier_only,
             )
             cmp = results.get('baseline_comparison', {})
             if not no_save:
@@ -425,7 +427,7 @@ def train(ctx, stat, val_days, test_days, no_save, use_tuned, compare, list_stat
                         fg='yellow'
                     ))
                 else:
-                    trainer.save_models()
+                    trainer.save_models(classifier_only=classifier_only)
                     click.echo(click.style(f"  {stat_type}: OK", fg='green'))
             else:
                 click.echo(click.style(f"  {stat_type}: OK", fg='green'))

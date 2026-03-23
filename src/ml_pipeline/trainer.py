@@ -197,6 +197,7 @@ class ModelTrainer:
         calibrate: bool = True,
         calibration_method: Literal['isotonic', 'sigmoid'] = 'isotonic',
         compare_baseline: bool = False,
+        classifier_only: bool = False,
     ) -> Dict:
         """
         Train both regressor and classifier with proper train/val/test split.
@@ -232,7 +233,7 @@ class ModelTrainer:
         player_positions = self.data_loader.get_player_position_groups()
 
         # === REGRESSOR: Train on historical game logs ===
-        if use_historical:
+        if use_historical and not classifier_only:
             hist_df = self.data_loader.load_historical_games(self.stat_type)
 
             if len(hist_df) == 0:
@@ -497,9 +498,9 @@ class ModelTrainer:
         results['classifier_features'] = self._classifier_features
         results['split_info'] = {
             'regressor': {
-                'train_days': len(reg_train_dates) if use_historical else 0,
-                'val_days': len(reg_val_dates) if use_historical else 0,
-                'test_days': len(reg_test_dates) if use_historical else 0,
+                'train_days': len(reg_train_dates) if (use_historical and not classifier_only) else 0,
+                'val_days': len(reg_val_dates) if (use_historical and not classifier_only) else 0,
+                'test_days': len(reg_test_dates) if (use_historical and not classifier_only) else 0,
             },
             'classifier': {
                 'train_days': len(clf_train_dates),
@@ -618,12 +619,13 @@ class ModelTrainer:
             'feature_importance_classifier': clf_importance,
         }
 
-    def save_models(self, suffix: str = '') -> Tuple[str, str]:
+    def save_models(self, suffix: str = '', classifier_only: bool = False) -> Tuple[str, str]:
         """
         Save trained models to disk.
 
         Args:
             suffix: Optional suffix for model filenames
+            classifier_only: Only save the classifier (skip regressor)
 
         Returns:
             Tuple of (regressor_path, classifier_path)
@@ -641,13 +643,15 @@ class ModelTrainer:
             f"{self.stat_type}_classifier{suffix_str}.joblib"
         )
 
-        # Save models with metadata
-        reg_data = {
-            'model': self.regressor,
-            'feature_columns': self._regressor_features,
-            'stat_type': self.stat_type,
-            'trained_at': datetime.now().isoformat(),
-        }
+        if not classifier_only:
+            reg_data = {
+                'model': self.regressor,
+                'feature_columns': self._regressor_features,
+                'stat_type': self.stat_type,
+                'trained_at': datetime.now().isoformat(),
+            }
+            joblib.dump(reg_data, reg_path)
+
         clf_data = {
             'model': self.classifier,
             'feature_columns': self._classifier_features,
@@ -661,8 +665,6 @@ class ModelTrainer:
                 'features': self._classifier_features,
             },
         }
-
-        joblib.dump(reg_data, reg_path)
         joblib.dump(clf_data, clf_path)
 
         return reg_path, clf_path

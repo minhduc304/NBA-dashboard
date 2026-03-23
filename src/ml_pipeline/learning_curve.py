@@ -60,7 +60,6 @@ def run_learning_curve(
     opp_defense = loader.get_opponent_stat_defense(stat_type)
     pos_defense = loader.get_position_defense(stat_type)
     player_positions = loader.get_player_position_groups()
-
     # Load all classifier data (same as trainer.py does)
     clf_df = loader.load_training_data(stat_type)
     if len(clf_df) == 0:

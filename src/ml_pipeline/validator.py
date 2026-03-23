@@ -642,7 +642,14 @@ def backfill_validation_from_outcomes(
             # Load prop outcomes
             engineer = FeatureEngineer(stat_type)
             df = loader.load_training_data(stat_type)
-            df = engineer.engineer_features(df)
+            df = engineer.engineer_features(
+                df,
+                matchup_stats=loader.get_player_vs_opponent_stats(stat_type),
+                consistency_stats=loader.get_player_consistency_stats(stat_type),
+                opp_defense=loader.get_opponent_stat_defense(stat_type),
+                pos_defense=loader.get_position_defense(stat_type),
+                player_positions=loader.get_player_position_groups(),
+            )
 
             # Get features
             reg_cols = [f for f in reg_features if f in df.columns]
