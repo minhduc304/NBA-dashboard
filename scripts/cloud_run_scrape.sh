@@ -29,6 +29,11 @@ echo ""
 echo ">>> Scraping Underdog + PrizePicks..."
 python -m src.cli.main --db "${DB_PATH}" scrape no-odds
 
+# Collect game logs so DB stays fresh between pipeline runs
+echo ""
+echo ">>> Collecting game logs..."
+python -m src.cli.main --db "${DB_PATH}" ml pipeline --step logs
+
 # Upload updated database back to Cloud Storage
 echo ""
 echo ">>> Uploading database to GCS..."
