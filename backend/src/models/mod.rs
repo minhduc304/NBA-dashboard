@@ -417,6 +417,8 @@ pub struct TopPickRow {
     pub away_team: String,
     pub game_date: String,
     pub game_time: Option<String>,
+    pub injury_status: Option<String>,
+    pub injury_description: Option<String>,
 }
 
 /// One sharp book's line + odds for the expanded view
@@ -446,6 +448,8 @@ pub struct TopPick {
     pub home_team: String,
     pub away_team: String,
     pub game_date: String,
+    pub injury_status: Option<String>,
+    pub injury_description: Option<String>,
 }
 
 /// Top-level response for /api/screener/top-picks

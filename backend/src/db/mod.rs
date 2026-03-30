@@ -688,6 +688,11 @@ pub async fn get_top_pick_candidates(
                   AND (american_odds IS NULL OR (american_odds >= -125 AND american_odds <= -100))
             )
             WHERE rn = 1
+        ),
+        latest_injuries AS (
+            SELECT player_name, injury_status, injury_description
+            FROM player_injuries
+            WHERE collection_date = (SELECT MAX(collection_date) FROM player_injuries)
         )
         SELECT
             u.player_name_lower AS player_name,
@@ -701,7 +706,9 @@ pub async fn get_top_pick_candidates(
             s.home_team,
             s.away_team,
             s.game_date,
-            tm.game_time
+            tm.game_time,
+            li.injury_status,
+            li.injury_description
         FROM odds_api_props s
         INNER JOIN ud_lines u
             ON LOWER(s.player_name) = u.player_name_lower
@@ -709,6 +716,8 @@ pub async fn get_top_pick_candidates(
         INNER JOIN today_matchups tm
             ON s.home_team = tm.home_team_name
            AND s.away_team = tm.away_team_name
+        LEFT JOIN latest_injuries li
+            ON LOWER(li.player_name) = u.player_name_lower
         WHERE s.sportsbook IN ('betmgm', 'draftkings', 'fanduel')
         ORDER BY u.player_name_lower, s.stat_type, s.line
         "#

@@ -458,6 +458,8 @@ export interface ApiTopPick {
   homeTeam: string;
   awayTeam: string;
   gameDate: string;
+  injuryStatus: string | null;
+  injuryDescription: string | null;
 }
 
 export interface ApiTopPicksResponse {

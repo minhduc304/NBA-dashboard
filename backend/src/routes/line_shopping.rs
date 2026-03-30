@@ -82,6 +82,8 @@ struct CandidateGroup {
     away_team: String,
     game_date: String,
     books: Vec<SharpBookLine>,
+    injury_status: Option<String>,
+    injury_description: Option<String>,
 }
 
 /// GET /api/screener/top-picks?game_date=
@@ -116,6 +118,8 @@ pub async fn get_top_picks(
             away_team: row.away_team.clone(),
             game_date: row.game_date.clone(),
             books: Vec::new(),
+            injury_status: row.injury_status.clone(),
+            injury_description: row.injury_description.clone(),
         });
         group.books.push(SharpBookLine {
             sportsbook: row.sportsbook,
@@ -181,6 +185,8 @@ pub async fn get_top_picks(
                 home_team: group.home_team,
                 away_team: group.away_team,
                 game_date: group.game_date,
+                injury_status: group.injury_status,
+                injury_description: group.injury_description,
             })
         })
         .collect();

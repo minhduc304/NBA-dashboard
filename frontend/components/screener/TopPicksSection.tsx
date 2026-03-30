@@ -62,6 +62,27 @@ function titleCase(name: string): string {
   return name.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const INJURY_BADGE: Record<string, { label: string; className: string }> = {
+  out:        { label: 'OUT',  className: 'bg-destructive/20 text-destructive' },
+  doubtful:   { label: 'DBT',  className: 'bg-orange-500/20 text-orange-500' },
+  questionable: { label: 'Q',  className: 'bg-yellow-500/20 text-yellow-500' },
+  'day-to-day': { label: 'DTD', className: 'bg-yellow-500/20 text-yellow-500' },
+};
+
+function InjuryBadge({ status, description }: { status: string | null; description: string | null }) {
+  if (!status) return null;
+  const badge = INJURY_BADGE[status.toLowerCase()];
+  if (!badge) return null;
+  return (
+    <span
+      className={cn('text-[0.6rem] font-bold px-1 py-0.5 rounded-sm leading-none', badge.className)}
+      title={description ?? status}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
 interface TopPicksSectionProps {
   picks: ApiTopPick[];
   loading: boolean;
@@ -126,6 +147,7 @@ function PickRow({ pick, rank }: { pick: ApiTopPick; rank: number }) {
               expanded && 'rotate-90',
             )} />
             {titleCase(pick.playerName)}
+            <InjuryBadge status={pick.injuryStatus} description={pick.injuryDescription} />
           </div>
         </td>
         <td className="px-3 whitespace-nowrap">
