@@ -158,6 +158,10 @@ class FeatureEngineer:
         if include_minutes_projection:
             df = self._add_minutes_features(df)
 
+        # Recent form (L3) and venue-specific features
+        df = self._add_recent_form_features(df)
+        df = self._add_venue_features(df)
+
         # Fill missing values
         df = self._handle_missing(df)
 
@@ -702,6 +706,66 @@ class FeatureEngineer:
 
         return df
 
+    def _add_recent_form_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add L3 (last 3 games) features capturing very recent form."""
+        if 'l3_stat' not in df.columns or df['l3_stat'].isna().all():
+            df['l3_vs_l10'] = 0
+            df['line_vs_l3'] = df.get('line_vs_l10', 0)
+            return df
+
+        df['l3_stat'] = df['l3_stat'].fillna(df['l10_stat'])
+
+        # Hot/cold streak: positive = player running above medium-term baseline
+        df['l3_vs_l10'] = df['l3_stat'] - df['l10_stat']
+
+        if 'line' in df.columns:
+            df['line_vs_l3'] = df['line'] - df['l3_stat']
+        else:
+            df['line_vs_l3'] = 0
+
+        return df
+
+    def _add_venue_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add venue-specific (home/away) rolling averages."""
+        if 'l10_stat_home' not in df.columns or 'l10_stat_away' not in df.columns:
+            df['l10_stat_venue'] = df.get('l10_stat', 0)
+            df['line_vs_l10_venue'] = df.get('line_vs_l10', 0)
+            df['venue_split_diff'] = 0
+            return df
+        if 'is_home' not in df.columns:
+            df['l10_stat_venue'] = df.get('l10_stat', 0)
+            df['line_vs_l10_venue'] = df.get('line_vs_l10', 0)
+            df['venue_split_diff'] = 0
+            return df
+
+        MIN_VENUE_GAMES = 3
+
+        # Use venue-specific average when we have enough history, else fall back to overall L10
+        home_avg = df['l10_stat_home'].where(df['l10_stat_home'].notna(), other=np.nan)
+        away_avg = df['l10_stat_away'].where(df['l10_stat_away'].notna(), other=np.nan)
+
+        df['l10_stat_venue'] = np.where(
+            df['is_home'] == 1,
+            np.where(df['games_in_l3'].ge(MIN_VENUE_GAMES) & home_avg.notna(), home_avg, df['l10_stat']),
+            np.where(df['games_in_l3'].ge(MIN_VENUE_GAMES) & away_avg.notna(), away_avg, df['l10_stat']),
+        ) if 'games_in_l3' in df.columns else np.where(
+            df['is_home'] == 1,
+            home_avg.fillna(df['l10_stat']),
+            away_avg.fillna(df['l10_stat']),
+        )
+
+        if 'line' in df.columns:
+            df['line_vs_l10_venue'] = df['line'] - df['l10_stat_venue']
+        else:
+            df['line_vs_l10_venue'] = 0
+
+        # Magnitude of home/away differential; 0 when either side is missing
+        df['venue_split_diff'] = (
+            home_avg.fillna(df['l10_stat']) - away_avg.fillna(df['l10_stat'])
+        )
+
+        return df
+
     def _add_minutes_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add minutes trend slope and injury context features from pre-computed rolling stats.
@@ -758,18 +822,12 @@ class FeatureEngineer:
 
             # Game context
             'is_home',
-            'days_rest',
-            'is_back_to_back',
             'games_in_l5',
             'games_in_l10',
 
-            # Rest disparity features
-            'rest_disparity',
-            'opponent_b2b_flag',
-
-            # Interactions (non-line based)
-            'home_rested',
-            'away_b2b',
+            # Rest/schedule features eliminated (near-zero SHAP across all stats):
+            # days_rest (0.006-0.012), is_back_to_back (0.005), rest_disparity,
+            # opponent_b2b_flag (0.005-0.009), home_rested (0.005), away_b2b (0.000-0.006)
         ]
 
     def get_line_features(self) -> List[str]:
@@ -787,24 +845,28 @@ class FeatureEngineer:
             'line_pct_l10',
             'line_std_units',
             'line_above_l10',
+        ] + ([] if self.stat_type == 'points' else [
+            # Interaction features: zero SHAP for points; kept for rebounds/assists
             'trending_up_line_low',
             'trending_down_line_high',
-        ]
+        ])
 
     def get_odds_features(self) -> List[str]:
         """
         Return odds-based features for classifier.
         These features help the model understand vig and true probabilities.
 
-        Note: We only use vig_pct and over_fair_prob to avoid redundancy.
+        Note: over_fair_prob eliminated for points (0.000 SHAP); kept for rebounds/assists.
         under_fair_prob = 1 - over_fair_prob, and implied_prob features
         are just fair_prob * (1 + vig), so including all would be multicollinear.
 
         Returns:
             List of odds-related column names
         """
+        if self.stat_type == 'points':
+            return []
         return [
-            'over_fair_prob',    # No-vig probability of over (book's true estimate)
+            'over_fair_prob',
         ]
 
     def get_matchup_features(self) -> List[str]:
@@ -866,6 +928,41 @@ class FeatureEngineer:
             'is_currently_dtd',
         ]
 
+    def get_recent_form_features(self) -> List[str]:
+        """Return L3 recent form features.
+
+        Disabled for assists — assists are driven by lineup dynamics and role,
+        not short-term form windows.
+        """
+        if self.stat_type == 'assists':
+            return []
+        return [
+            'l3_stat',
+            'l3_vs_l10',
+            'line_vs_l3',
+        ]
+
+    def get_venue_features(self) -> List[str]:
+        """Return venue-specific (home/away split) features.
+
+        Eliminated: all three features (l10_stat_venue, line_vs_l10_venue, venue_split_diff)
+        ranked near-bottom SHAP for both points (0.002–0.009) and rebounds (0.002–0.008).
+        venue_split_diff was already auto-dropped by min_feature_importance filter.
+
+        Previously disabled for assists — home/away split for assists (avg 0.41 pts) is
+        too small to overcome the noise introduced.
+
+        Disabled for rebounds — SHAP confirmed near-zero (0.002–0.008); removing rebounds
+        venue features shows -0.2pp (PASS). Kept for points where removal caused -0.7pp REGRESSION.
+        """
+        if self.stat_type in ('assists', 'rebounds'):
+            return []
+        return [
+            'l10_stat_venue',
+            'line_vs_l10_venue',
+            'venue_split_diff',
+        ]
+
     def get_classifier_features(self) -> List[str]:
         """
         Return all features for classifier (includes line + opponent + sportsbook + odds + minutes features).
@@ -880,7 +977,7 @@ class FeatureEngineer:
             'opp_pace',
             'opp_def_rating',
             'pace_diff',
-        ] + self.get_line_features() + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features() + self.get_minutes_features()
+        ] + self.get_line_features() + self.get_odds_features() + self.get_matchup_features() + self.get_opponent_defense_features() + self.get_minutes_features() + self.get_recent_form_features() + self.get_venue_features()
 
     def get_available_features(self, df: pd.DataFrame) -> List[str]:
         """

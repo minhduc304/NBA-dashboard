@@ -605,6 +605,14 @@ def init_database(db_path: str = None) -> None:
             -- Games in each window (for validation)
             games_in_l5 INTEGER, games_in_l10 INTEGER, games_in_l20 INTEGER,
 
+            -- Last 3 games averages (very recent form)
+            l3_pts REAL, l3_reb REAL, l3_ast REAL, l3_min REAL,
+            games_in_l3 INTEGER,
+
+            -- Home/away split averages (last 10 home or away games respectively)
+            l10_pts_home REAL, l10_reb_home REAL, l10_ast_home REAL,
+            l10_pts_away REAL, l10_reb_away REAL, l10_ast_away REAL,
+
             -- Metadata
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
@@ -670,6 +678,26 @@ def init_database(db_path: str = None) -> None:
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_injury_impact_player ON teammate_injury_impact(player_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_injury_impact_teammate ON teammate_injury_impact(injured_teammate_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_injury_impact_team ON teammate_injury_impact(team_id, season)')
+
+    # Schema migrations — add new columns to existing tables if absent
+    new_cols = [
+        ("player_rolling_stats", "l3_pts",       "REAL"),
+        ("player_rolling_stats", "l3_reb",       "REAL"),
+        ("player_rolling_stats", "l3_ast",       "REAL"),
+        ("player_rolling_stats", "l3_min",       "REAL"),
+        ("player_rolling_stats", "games_in_l3",  "INTEGER"),
+        ("player_rolling_stats", "l10_pts_home", "REAL"),
+        ("player_rolling_stats", "l10_reb_home", "REAL"),
+        ("player_rolling_stats", "l10_ast_home", "REAL"),
+        ("player_rolling_stats", "l10_pts_away", "REAL"),
+        ("player_rolling_stats", "l10_reb_away", "REAL"),
+        ("player_rolling_stats", "l10_ast_away", "REAL"),
+    ]
+    for table, col, col_type in new_cols:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass  # Column already exists
 
     conn.commit()
     conn.close()

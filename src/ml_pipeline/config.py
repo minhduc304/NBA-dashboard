@@ -137,7 +137,9 @@ DEFAULT_TEST_DAYS = 7   # For final evaluation (test) - ~200+ samples
 # Probability calibration settings
 # Calibration improves predicted probability reliability for bet sizing
 DEFAULT_CALIBRATE = True
-DEFAULT_CALIBRATION_METHOD = 'isotonic'  # 'isotonic' (flexible) or 'sigmoid' (Platt scaling)
+DEFAULT_CALIBRATION_METHOD = 'sigmoid'  # sigmoid (Platt scaling) extrapolates continuously; isotonic
+                                        # clamped to 5% floor and produced only 11-25 unique probability
+                                        # values at inference time, causing systematic under-bias
 
 # Recency weighting: exponential decay so recent games count more
 # Per-stat half-lives tuned via CV grid search

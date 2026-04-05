@@ -40,6 +40,14 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
             player_id, game_id, game_date, season, player_name,
             pts, reb, ast, min, stl, blk, tov, fg3m,
             pts + reb + ast as pra,
+            is_home,
+
+            -- L3 averages (previous 3 games, very recent form)
+            AVG(pts) OVER w3 as l3_pts,
+            AVG(reb) OVER w3 as l3_reb,
+            AVG(ast) OVER w3 as l3_ast,
+            AVG(min) OVER w3 as l3_min,
+            COUNT(*) OVER w3 as games_in_l3,
 
             -- L5 averages (previous 5 games, not including current)
             AVG(pts) OVER w5 as l5_pts,
@@ -76,6 +84,7 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
         FROM player_game_logs
         WHERE min > 0
         WINDOW
+            w3 AS (PARTITION BY player_id ORDER BY game_date ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING),
             w5 AS (PARTITION BY player_id ORDER BY game_date ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING),
             w10 AS (PARTITION BY player_id ORDER BY game_date ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING),
             w20 AS (PARTITION BY player_id ORDER BY game_date ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING)
@@ -99,10 +108,26 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
 
         for i, row in enumerate(games):
             (player_id, game_id, game_date, season, player_name,
-             pts, reb, ast, min_played, stl, blk, tov, fg3m, pra,
+             pts, reb, ast, min_played, stl, blk, tov, fg3m, pra, is_home,
+             l3_pts, l3_reb, l3_ast, l3_min, games_in_l3,
              l5_pts, l5_reb, l5_ast, l5_min, l5_stl, l5_blk, l5_tov, l5_fg3m, l5_pra, games_in_l5,
              l10_pts, l10_reb, l10_ast, l10_min, l10_stl, l10_blk, l10_tov, l10_fg3m, l10_pra, games_in_l10,
              l20_pts, l20_reb, l20_ast, l20_min, l20_pra, games_in_l20) = row
+
+            # Home/away split averages — last 10 games played at each venue
+            home_prev = [g for g in games[:i] if g[14] == 1][-10:]  # g[14] = is_home
+            away_prev = [g for g in games[:i] if g[14] == 0][-10:]
+
+            def _venue_avg(game_list, stat_idx):
+                vals = [g[stat_idx] for g in game_list if g[stat_idx] is not None]
+                return sum(vals) / len(vals) if vals else None
+
+            l10_pts_home = _venue_avg(home_prev, 5)   # pts at index 5
+            l10_reb_home = _venue_avg(home_prev, 6)
+            l10_ast_home = _venue_avg(home_prev, 7)
+            l10_pts_away = _venue_avg(away_prev, 5)
+            l10_reb_away = _venue_avg(away_prev, 6)
+            l10_ast_away = _venue_avg(away_prev, 7)
 
             # Per-36 rates (based on L10 minutes)
             l10_pts_per36 = None
@@ -175,7 +200,10 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
                 minutes_trend_slope, minutes_baseline,
                 injury_context['games_since_injury_return'],
                 injury_context['is_currently_dtd'],
-                games_in_l5, games_in_l10, games_in_l20
+                games_in_l5, games_in_l10, games_in_l20,
+                l3_pts, l3_reb, l3_ast, l3_min, games_in_l3,
+                l10_pts_home, l10_reb_home, l10_ast_home,
+                l10_pts_away, l10_reb_away, l10_ast_away,
             ))
 
     # Batch insert
@@ -190,8 +218,11 @@ def compute_rolling_stats(db_path: str = None) -> Dict[str, int]:
             l10_pts_std, l10_reb_std, l10_ast_std,
             minutes_trend_slope, minutes_baseline,
             games_since_injury_return, is_currently_dtd,
-            games_in_l5, games_in_l10, games_in_l20
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            games_in_l5, games_in_l10, games_in_l20,
+            l3_pts, l3_reb, l3_ast, l3_min, games_in_l3,
+            l10_pts_home, l10_reb_home, l10_ast_home,
+            l10_pts_away, l10_reb_away, l10_ast_away
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', inserts)
 
     conn.commit()

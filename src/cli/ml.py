@@ -717,10 +717,11 @@ def shap_analysis(ctx, stat, val_days, test_days, n_explain):
 
 @ml.command()
 @click.option('--stat', multiple=True, help='Specific stat(s) to predict')
-@click.option('--min-confidence', default=0.60, help='Confidence threshold')
+@click.option('--min-confidence', default=0.50, help='Confidence threshold')
 @click.option('--show-all', is_flag=True, help='Show all predictions (not just recommendations)')
+@click.option('--source', default=None, help='Filter by prop source (underdog, prizepicks, odds_api)')
 @click.pass_context
-def predict(ctx, stat, min_confidence, show_all):
+def predict(ctx, stat, min_confidence, show_all, source):
     """Generate predictions for today's props."""
     from src.ml_pipeline.config import PRIORITY_STATS
 
@@ -750,12 +751,36 @@ def predict(ctx, stat, min_confidence, show_all):
         else:
             recs = predictions
 
+        # For Odds API props only: drop boosted/non-standard lines (-125 to -100 range)
+        # PrizePicks (NULL odds) and Underdog (pick'em style) pass through unfiltered
+        if 'over_odds' in recs.columns and 'source' in recs.columns:
+            is_odds_api = recs['source'] == 'odds_api'
+            standard_odds = recs['over_odds'].isna() | recs['over_odds'].between(-125, -100)
+            recs = recs[~is_odds_api | standard_odds]
+
+        # Deduplicate: same player+stat+line across multiple sportsbooks → keep highest confidence
+        if 'source' in recs.columns:
+            recs = (recs.sort_values('confidence', ascending=False)
+                       .drop_duplicates(subset=['player_name', 'stat_type', 'line', 'recommendation']))
+
+        # Filter by source if requested
+        if source and 'source' in recs.columns:
+            recs = recs[recs['source'] == source]
+
         if recs.empty:
             click.echo(f"No strong recommendations (confidence >= {min_confidence})")
             click.echo(f"Total props analyzed: {len(predictions)}")
             return
 
-        click.echo(f"\nFound {len(recs)} recommendations out of {len(predictions)} props\n")
+        # Take top 3-4 picks per stat type so all stats are represented
+        n_stats = recs['stat_type'].nunique()
+        per_stat = max(3, 10 // n_stats)
+        recs = (recs.sort_values('confidence', ascending=False)
+                    .groupby('stat_type', group_keys=False)
+                    .head(per_stat))
+
+        source_label = f"{source} " if source else ""
+        click.echo(f"\nTop picks (up to {per_stat}/stat, confidence >= {min_confidence}):\n")
 
         # Group by stat type
         for stat_type in recs['stat_type'].unique():

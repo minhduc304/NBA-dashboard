@@ -63,6 +63,9 @@ class PropDataLoader:
             prs.l20_{stat_col} as l20_stat,
             prs.l10_{stat_col}_std as l10_stat_std,
             prs.{stat_col}_trend as stat_trend,
+            prs.l3_{stat_col} as l3_stat,
+            prs.l10_{stat_col}_home as l10_stat_home,
+            prs.l10_{stat_col}_away as l10_stat_away,
 
             -- Minutes context
             prs.l10_min,
@@ -77,6 +80,7 @@ class PropDataLoader:
             prs.games_in_l5,
             prs.games_in_l10,
             prs.games_in_l20,
+            prs.games_in_l3,
 
             -- Game context
             pgl.is_home,
@@ -195,7 +199,9 @@ class PropDataLoader:
                  AND up2.stat_value = up.stat_value
                  AND DATE(up2.scheduled_at) = DATE(up.scheduled_at)
                  AND up2.choice = 'under'
-                 LIMIT 1) as under_odds
+                 LIMIT 1) as under_odds,
+                up.team_name as player_team_name,
+                up.opponent_name as opponent_team_name
             FROM underdog_props up
             WHERE up.stat_name = ?
             AND DATE(up.scheduled_at, 'localtime') = DATE('now', 'localtime')
@@ -211,7 +217,9 @@ class PropDataLoader:
                 pp.stat_value as line,
                 'prizepicks' as source,
                 NULL as over_odds,
-                NULL as under_odds
+                NULL as under_odds,
+                pp.team_name as player_team_name,
+                pp.opponent_name as opponent_team_name
             FROM prizepicks_props pp
             WHERE pp.stat_name = ?
             AND DATE(pp.scheduled_at, 'localtime') = DATE('now', 'localtime')
@@ -220,7 +228,7 @@ class PropDataLoader:
 
             UNION ALL
 
-            -- Odds API props
+            -- Odds API props: derive player team from player_stats
             SELECT
                 oap.player_name,
                 oap.game_date,
@@ -228,10 +236,20 @@ class PropDataLoader:
                 oap.line,
                 'odds_api' as source,
                 oap.over_odds,
-                oap.under_odds
+                oap.under_odds,
+                pt.full_name as player_team_name,
+                CASE WHEN oap.home_team = pt.full_name THEN oap.away_team ELSE oap.home_team END as opponent_team_name
             FROM odds_api_props oap
+            LEFT JOIN player_stats oap_ps ON oap.player_name = oap_ps.player_name
+            LEFT JOIN teams pt ON pt.team_id = oap_ps.team_id
             WHERE oap.stat_type = ?
             AND oap.game_date = DATE('now', 'localtime')
+        ),
+        today_games AS (
+            -- Home/away lookup for is_home computation
+            SELECT DISTINCT home_team, away_team
+            FROM odds_api_props
+            WHERE game_date = DATE('now', 'localtime')
         )
         SELECT DISTINCT
             a.player_name,
@@ -243,12 +261,24 @@ class PropDataLoader:
             a.over_odds,
             a.under_odds,
 
+            -- Game context: home/away
+            CASE WHEN tg.home_team = a.player_team_name THEN 1 ELSE 0 END as is_home,
+
+            -- Opponent pace and defensive rating
+            opp_tp.pace as opp_pace,
+            opp_tp.def_rating as opp_def_rating,
+            player_tp.pace as player_team_pace,
+            COALESCE(opp_tp.pace, 0) - COALESCE(player_tp.pace, 0) as pace_diff,
+
             -- Rolling stats
             prs.l5_{stat_col} as l5_stat,
             prs.l10_{stat_col} as l10_stat,
             prs.l20_{stat_col} as l20_stat,
             prs.l10_{stat_col}_std as l10_stat_std,
             prs.{stat_col}_trend as stat_trend,
+            prs.l3_{stat_col} as l3_stat,
+            prs.l10_{stat_col}_home as l10_stat_home,
+            prs.l10_{stat_col}_away as l10_stat_away,
             prs.l10_min,
             prs.l5_min,
             prs.minutes_trend_slope,
@@ -256,7 +286,8 @@ class PropDataLoader:
             prs.is_currently_dtd,
             prs.games_in_l5,
             prs.games_in_l10,
-            prs.games_in_l20
+            prs.games_in_l20,
+            prs.games_in_l3
 
         FROM all_sources a
 
@@ -274,6 +305,23 @@ class PropDataLoader:
                 FROM player_rolling_stats
                 WHERE player_id = COALESCE(ps.player_id, pna.player_id)
             )
+
+        -- Opponent team pace/defense
+        LEFT JOIN teams opp_t ON opp_t.full_name = a.opponent_team_name
+        LEFT JOIN team_pace opp_tp
+            ON opp_tp.team_id = opp_t.team_id
+            AND opp_tp.season = '{CURRENT_SEASON}'
+
+        -- Player team pace (for pace_diff)
+        LEFT JOIN teams player_t ON player_t.full_name = a.player_team_name
+        LEFT JOIN team_pace player_tp
+            ON player_tp.team_id = player_t.team_id
+            AND player_tp.season = '{CURRENT_SEASON}'
+
+        -- Home/away for is_home
+        LEFT JOIN today_games tg
+            ON tg.home_team = a.player_team_name
+            OR tg.away_team = a.player_team_name
         """
 
         conn = sqlite3.connect(self.db_path)
@@ -354,6 +402,9 @@ class PropDataLoader:
             prs.l20_{stat_col} as l20_stat,
             prs.l10_{stat_col}_std as l10_stat_std,
             prs.{stat_col}_trend as stat_trend,
+            prs.l3_{stat_col} as l3_stat,
+            prs.l10_{stat_col}_home as l10_stat_home,
+            prs.l10_{stat_col}_away as l10_stat_away,
 
             -- Minutes context
             prs.l10_min,
@@ -369,6 +420,7 @@ class PropDataLoader:
             prs.games_in_l5,
             prs.games_in_l10,
             prs.games_in_l20,
+            prs.games_in_l3,
 
             -- Game context
             pgl.is_home,
