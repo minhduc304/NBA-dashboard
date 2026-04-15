@@ -65,6 +65,13 @@ def all(ctx):
     click.echo("\n--- Odds API ---")
     results['odds_api'] = _scrape_with_retry(_scrape_odds_api, "Odds API", no_retry=True)
 
+    click.echo("\n--- Schedule Sync ---")
+    try:
+        n = _sync_schedule(ctx.obj.get('db') if ctx.obj else None)
+        click.echo(click.style(f"  Schedule Sync: OK ({n} new games)", fg='green'))
+    except Exception as e:
+        click.echo(click.style(f"  Schedule Sync: FAILED - {e}", fg='yellow'))
+
     _print_summary(results)
 
 
@@ -101,6 +108,14 @@ def odds_api(ctx):
     click.echo("=" * 60)
 
     result = _scrape_with_retry(_scrape_odds_api, "Odds API", no_retry=True)
+
+    click.echo("\n--- Schedule Sync ---")
+    try:
+        n = _sync_schedule(ctx.obj.get('db') if ctx.obj else None)
+        click.echo(click.style(f"  Schedule Sync: OK ({n} new games)", fg='green'))
+    except Exception as e:
+        click.echo(click.style(f"  Schedule Sync: FAILED - {e}", fg='yellow'))
+
     _print_summary({'odds_api': result})
 
 
@@ -191,6 +206,63 @@ def _scrape_odds_api():
         'props': props,
         'quota_remaining': getattr(scraper.api, 'quota_remaining', None)
     }
+
+
+def _sync_schedule(db_path=None):
+    """Sync upcoming games from odds_api_props into the schedule table."""
+    import sqlite3
+    from src.config import get_db_path
+
+    db_path = db_path or get_db_path()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT DISTINCT o.home_team, o.away_team, o.game_date, o.event_id
+        FROM odds_api_props o
+        WHERE o.game_date >= DATE('now', 'localtime')
+          AND NOT EXISTS (
+              SELECT 1 FROM schedule s
+              WHERE s.home_team_name = o.home_team
+                AND s.away_team_name = o.away_team
+                AND s.game_date = o.game_date
+          )
+        ORDER BY o.game_date
+    """)
+    missing = cur.fetchall()
+
+    if not missing:
+        conn.close()
+        return 0
+
+    cur.execute("SELECT full_name, team_id, abbreviation, city FROM teams")
+    team_map = {row['full_name']: row for row in cur.fetchall()}
+
+    inserted = 0
+    for row in missing:
+        home = team_map.get(row['home_team'])
+        away = team_map.get(row['away_team'])
+        if not home or not away:
+            continue
+        game_id = f"{row['game_date'].replace('-', '')}/{away['abbreviation']}{home['abbreviation']}"
+        cur.execute("""
+            INSERT OR IGNORE INTO schedule
+                (game_id, game_date, game_status,
+                 home_team_id, home_team_name, home_team_abbreviation, home_team_city,
+                 away_team_id, away_team_name, away_team_abbreviation, away_team_city)
+            VALUES (?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            game_id, row['game_date'],
+            home['team_id'], row['home_team'], home['abbreviation'], home['city'],
+            away['team_id'], row['away_team'], away['abbreviation'], away['city'],
+        ))
+        if cur.rowcount > 0:
+            inserted += 1
+
+    conn.commit()
+    conn.close()
+    return inserted
 
 
 def _print_summary(results):

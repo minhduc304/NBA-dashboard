@@ -661,8 +661,14 @@ pub async fn get_top_pick_candidates(
     sqlx::query_as::<_, crate::models::TopPickRow>(
         r#"
         WITH today_matchups AS (
+            -- Regular season: use schedule (has game_time)
             SELECT home_team_name, away_team_name, game_time
             FROM schedule
+            WHERE game_date = ?
+            UNION
+            -- Playoffs/play-in: fall back to odds_api_props when schedule has no rows
+            SELECT DISTINCT home_team AS home_team_name, away_team AS away_team_name, NULL AS game_time
+            FROM odds_api_props
             WHERE game_date = ?
         ),
         ud_lines AS (
@@ -722,8 +728,9 @@ pub async fn get_top_pick_candidates(
         ORDER BY u.player_name_lower, s.stat_type, s.line
         "#
     )
-    .bind(game_date)
-    .bind(game_date)
+    .bind(game_date)  // today_matchups schedule branch
+    .bind(game_date)  // today_matchups odds_api_props branch
+    .bind(game_date)  // ud_lines scheduled_at filter
     .fetch_all(pool)
     .await
 }
