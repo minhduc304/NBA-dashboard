@@ -553,18 +553,26 @@ class NBAStatsCollector:
         logger.info("Fetching all player game logs for %s season...", self.SEASON)
 
         try:
-            response = playergamelogs.PlayerGameLogs(
-                season_nullable=self.SEASON,
-                season_type_nullable="Regular Season",
-                timeout=60
-            )
-            df = response.get_data_frames()[0]
+            frames = []
+            for season_type in ("Regular Season", "PlayIn", "Playoffs"):
+                resp = playergamelogs.PlayerGameLogs(
+                    season_nullable=self.SEASON,
+                    season_type_nullable=season_type,
+                    timeout=60
+                )
+                part = resp.get_data_frames()[0]
+                if not part.empty:
+                    frames.append(part)
+                    logger.info("Fetched %d %s game log entries", len(part), season_type)
 
-            if df.empty:
+            if not frames:
                 logger.warning("No game logs found")
                 return {'inserted': 0, 'skipped': 0}
 
-            logger.info("Fetched %d game log entries from API", len(df))
+            import pandas as pd
+            df = pd.concat(frames, ignore_index=True)
+
+            logger.info("Fetched %d total game log entries from API", len(df))
 
             # Rename columns to match database schema
             column_mapping = {
